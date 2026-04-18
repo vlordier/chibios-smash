@@ -52,7 +52,7 @@ static smash_scenario_t priority_inversion(void) {
 int main(void) {
 
     smash_config_t config = {
-        .enable_dpor          = false,
+        .enable_dpor          = true,
         .enable_state_caching = true,
         .max_depth            = 64,
         .max_interleavings    = 100000,
@@ -68,8 +68,8 @@ int main(void) {
     if (r.failing_trace) {
         printf("\nJSON trace:\n");
         smash_trace_dump_json(r.failing_trace, stdout);
-        free(r.failing_trace);
     }
+    smash_result_free(&r);
 
     return 0;
 }
