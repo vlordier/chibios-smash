@@ -11,6 +11,13 @@
 /* Internal helpers                                                          */
 /*---------------------------------------------------------------------------*/
 
+/* Remove the waiter at position idx from a resource's wait queue.
+ * Uses swap-with-last to maintain a compact array in O(1). */
+static void waiter_remove(smash_resource_t *res, int idx) {
+
+    res->waiters[idx] = res->waiters[--res->waiter_count];
+}
+
 /* Push a mutex onto the thread's owned-mutex LIFO stack.
  * Mirrors ChibiOS mtxlist (mp->next = currtp->mtxlist; currtp->mtxlist = mp). */
 static void owned_push(smash_thread_t *t, int res_id) {
@@ -176,8 +183,8 @@ void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id) {
             }
         }
 
-        int woken                              = mtx->waiters[best];
-        mtx->waiters[best]                     = mtx->waiters[--mtx->waiter_count];
+        int woken = mtx->waiters[best];
+        waiter_remove(mtx, best);
         mtx->owner                             = woken;
         engine->threads[woken].state           = THREAD_READY;
         engine->threads[woken].blocked_on      = -1;
@@ -244,8 +251,8 @@ void smash_sem_signal(smash_engine_t *engine, int tid, int res_id) {
             }
         }
 
-        int woken                         = sem->waiters[best];
-        sem->waiters[best]                = sem->waiters[--sem->waiter_count];
+        int woken = sem->waiters[best];
+        waiter_remove(sem, best);
         engine->threads[woken].state      = THREAD_READY;
         engine->threads[woken].blocked_on = -1;
         engine->threads[woken].pc++;      /* wait succeeded; advance past it */
