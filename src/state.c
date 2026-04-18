@@ -68,18 +68,19 @@ bool smash_state_visited(smash_engine_t *engine, uint64_t hash) {
     return false; /* table full — treat as not visited */
 }
 
-void smash_state_mark_visited(smash_engine_t *engine, uint64_t hash) {
+bool smash_state_mark_visited(smash_engine_t *engine, uint64_t hash) {
 
-    if (engine->state_hash_count >= SMASH_MAX_STATES) return;
+    if (engine->state_hash_count >= SMASH_MAX_STATES) return false;
 
     uint64_t slot = hash & (SMASH_STATE_HT_SIZE - 1U);
     for (uint64_t i = 0; i < SMASH_STATE_HT_SIZE; i++) {
         uint64_t idx = (slot + i) & (SMASH_STATE_HT_SIZE - 1U);
         if (engine->state_ht[idx] == 0) {
-            engine->state_ht[idx] = hash;    /* no cast — stays uint64_t */
+            engine->state_ht[idx] = hash;
             engine->state_hash_count++;
-            return;
+            return true;
         }
-        if (engine->state_ht[idx] == hash) return; /* already present */
+        if (engine->state_ht[idx] == hash) return true; /* already present */
     }
+    return false; /* table full */
 }

@@ -143,14 +143,41 @@ bool smash_check_priority_inversion(const smash_engine_t *engine,
     return true;
 }
 
+bool smash_check_owned_mutex_integrity(const smash_engine_t *engine,
+                                       char *msg, int msg_len) {
+
+    /* Cross-check: every mutex in a thread's owned_mutex_stack must have
+     * that thread as its owner in engine->resources[].  Detects model
+     * bugs where the stack and the resource ownership diverge. */
+    for (int t = 0; t < engine->scenario->thread_count; t++) {
+        const smash_thread_t *th = &engine->threads[t];
+        for (int k = 0; k < th->owned_mutex_count; k++) {
+            int res = th->owned_mutex_stack[k];
+            if (res < 0 || res >= engine->scenario->resource_count) {
+                snprintf(msg, (size_t)msg_len,
+                         "T%d owned_mutex_stack[%d]=%d out of range", t, k, res);
+                return false;
+            }
+            if (engine->resources[res].owner != t) {
+                snprintf(msg, (size_t)msg_len,
+                         "T%d owns mutex %d in stack but resource owner is T%d",
+                         t, res, engine->resources[res].owner);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
 
     /* Structural integrity — checked after every step. */
-    if (!smash_check_mutex_integrity(engine, msg, msg_len))     return false;
-    if (!smash_check_sem_integrity(engine, msg, msg_len))       return false;
+    if (!smash_check_mutex_integrity(engine, msg, msg_len))        return false;
+    if (!smash_check_sem_integrity(engine, msg, msg_len))          return false;
+    if (!smash_check_owned_mutex_integrity(engine, msg, msg_len))  return false;
     /* Priority inheritance correctness — owner must be boosted to max-waiter
      * priority; if not, the inheritance chain is broken. */
-    if (!smash_check_priority_inversion(engine, msg, msg_len))  return false;
+    if (!smash_check_priority_inversion(engine, msg, msg_len))     return false;
     /* NOTE: deadlock (no runnable threads) is NOT checked here.  It is
      * detected separately in explore_dfs via smash_collect_runnable()==0,
      * which increments result->deadlocks.  Including it here would count

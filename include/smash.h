@@ -154,6 +154,7 @@ typedef struct {
 typedef struct {
     smash_trace_event_t events[SMASH_MAX_TRACE];
     int                 count;
+    bool                truncated;  /* events[] was full; later events were dropped */
     int                 schedule[SMASH_MAX_DEPTH]; /* thread chosen at each step */
     int                 schedule_len;
 } smash_trace_t;
@@ -226,6 +227,11 @@ typedef bool (*smash_invariant_fn)(const smash_engine_t *engine,
 /* Engine API (engine.c)                                                     */
 /*===========================================================================*/
 
+/* Validate scenario bounds before init. Returns true on success; writes
+ * a human-readable error into msg on failure. */
+bool smash_scenario_validate(const smash_scenario_t *scenario,
+                              char *msg, size_t msg_len);
+
 void smash_engine_init(smash_engine_t *engine, const smash_scenario_t *scenario);
 void smash_engine_reset(smash_engine_t *engine);
 int  smash_collect_runnable(const smash_engine_t *engine, int *out, int max);
@@ -268,10 +274,14 @@ typedef struct {
 } smash_dpor_t;
 
 void smash_dpor_init(smash_dpor_t *dpor);
+void smash_dpor_reset(smash_dpor_t *dpor);   /* clear history & backtrack set */
 bool smash_dpor_dependent(smash_action_type_t a_type, int a_res,
                           smash_action_type_t b_type, int b_res);
 void smash_dpor_record(smash_dpor_t *dpor, int tid, int resource_id,
                        smash_action_type_t type);
+/* NOTE: smash_dpor_analyze is NOT called by explore_dfs; the explorer uses
+ * persistent-sets DPOR inline via compute_persistent_set().  This function
+ * is available for external post-hoc analysis. */
 void smash_dpor_analyze(smash_dpor_t *dpor, const smash_engine_t *engine);
 bool smash_dpor_next_backtrack(smash_dpor_t *dpor, int *out_depth, int *out_tid);
 
@@ -295,7 +305,8 @@ uint64_t smash_state_hash(const smash_state_snapshot_t *snap);
 bool     smash_state_equal(const smash_state_snapshot_t *a,
                            const smash_state_snapshot_t *b);
 bool     smash_state_visited(smash_engine_t *engine, uint64_t hash);
-void     smash_state_mark_visited(smash_engine_t *engine, uint64_t hash);
+/* Returns false if the hash table is full and the hash could not be stored. */
+bool     smash_state_mark_visited(smash_engine_t *engine, uint64_t hash);
 
 /*===========================================================================*/
 /* Spec / invariant API (spec.c)                                             */
@@ -309,6 +320,9 @@ bool smash_check_sem_integrity(const smash_engine_t *engine,
                                char *msg, int msg_len);
 bool smash_check_priority_inversion(const smash_engine_t *engine,
                                     char *msg, int msg_len);
+/* Verify owned_mutex_stack vs actual mutex ownership for every thread. */
+bool smash_check_owned_mutex_integrity(const smash_engine_t *engine,
+                                       char *msg, int msg_len);
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len);
 
 /*===========================================================================*/
