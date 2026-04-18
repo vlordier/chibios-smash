@@ -30,6 +30,7 @@
 /* Open-addressing hash table for visited state hashes; ~50% load factor. */
 #define SMASH_STATE_HT_SIZE  (SMASH_MAX_STATES * 2U)
 #define SMASH_MAX_WAITERS    SMASH_MAX_THREADS
+#define SMASH_MAX_ISR_DEPTH  8   /* maximum ISR nesting depth */
 
 /* Sentinel for "no resource applicable" in actions and trace events. */
 #define SMASH_NO_RESOURCE    (-1)
@@ -43,6 +44,19 @@ _Static_assert((SMASH_STATE_HT_SIZE & (SMASH_STATE_HT_SIZE - 1U)) == 0,
     "SMASH_STATE_HT_SIZE must be a power of two for open-addressing");
 _Static_assert(SMASH_MAX_DEPTH <= SMASH_MAX_TRACE,
     "Save-stack depth must not exceed trace event buffer size");
+
+/*===========================================================================*/
+/* Execution context                                                         */
+/*===========================================================================*/
+
+/* ChibiOS execution classes (API context).  Blocking operations are only
+ * permitted from SMASH_CTX_THREAD; I-class operations (e.g. chSemSignalI)
+ * are valid from ISR and SYS_LOCK contexts. */
+typedef enum {
+    SMASH_CTX_THREAD,    /* normal thread context (chSysLock not held) */
+    SMASH_CTX_SYS_LOCK,  /* inside chSysLock() / chSysUnlock() pair */
+    SMASH_CTX_ISR,       /* inside interrupt handler */
+} smash_exec_ctx_t;
 
 /*===========================================================================*/
 /* Thread model                                                              */
@@ -71,6 +85,13 @@ typedef struct {
      * Matches chmtx.c:378 chDbgAssert(currtp->mtxlist == mp). */
     int                   owned_mutex_stack[SMASH_MAX_RESOURCES];
     int                   owned_mutex_count;
+    /* Execution context tracking (API correctness). */
+    smash_exec_ctx_t      exec_ctx;       /* current execution context */
+    int                   sys_lock_depth; /* chSysLock() nesting depth */
+    int                   isr_depth;      /* interrupt nesting depth */
+    /* Stack depth modeling. */
+    int                   stack_depth;    /* current estimated depth (abstract units) */
+    int                   stack_watermark;/* peak stack depth seen so far */
 } smash_thread_t;
 
 /*===========================================================================*/
@@ -92,6 +113,9 @@ typedef struct {
     /* Wait queue (shared) */
     int                   waiters[SMASH_MAX_WAITERS];
     int                   waiter_count;
+    /* Lifecycle flag: false if the object has been destroyed.
+     * Any operation on a dead resource is a use-after-free violation. */
+    bool                  alive;
 } smash_resource_t;
 
 /*===========================================================================*/
@@ -111,7 +135,23 @@ typedef enum {
      * expires before the resource is acquired, the thread resumes
      * with a timeout return code (MSG_TIMEOUT in ChibiOS). */
     ACT_MUTEX_TIMED_LOCK,
-    ACT_SEM_TIMED_WAIT
+    ACT_SEM_TIMED_WAIT,
+    /* Execution context transitions (API context correctness).
+     * Blocking operations in ISR/SYS_LOCK context are violations. */
+    ACT_SYS_LOCK,       /* chSysLock()   — enter system-locked context */
+    ACT_SYS_UNLOCK,     /* chSysUnlock() — exit system-locked context */
+    ACT_ISR_ENTER,      /* ISR handler entry — switches to SMASH_CTX_ISR */
+    ACT_ISR_EXIT,       /* ISR handler exit  — restores prior context */
+    /* Object lifecycle (use-after-free detection).
+     * ACT_OBJECT_INIT marks a resource as alive; ACT_OBJECT_DESTROY kills it.
+     * Any mutex/sem operation on a dead resource is a use-after-free violation. */
+    ACT_OBJECT_INIT,    /* chXxxObjectInit() — mark resource as alive */
+    ACT_OBJECT_DESTROY, /* chXxxFree()       — mark resource as dead */
+    /* Function call simulation (stack depth modeling).
+     * arg = abstract stack units consumed by the call.
+     * Exceeding stack_sizes[tid] from the scenario is a violation. */
+    ACT_CALL,           /* simulate a function call; arg = stack units consumed */
+    ACT_RETURN          /* return from a function call; arg = units to release */
 } smash_action_type_t;
 
 typedef struct {
@@ -136,7 +176,8 @@ typedef struct {
     smash_action_t steps[SMASH_MAX_THREADS][SMASH_MAX_STEPS];
     int           step_count[SMASH_MAX_THREADS];
     smash_resource_type_t res_types[SMASH_MAX_RESOURCES];
-    int           sem_init[SMASH_MAX_RESOURCES]; /* initial sem count */
+    int           sem_init[SMASH_MAX_RESOURCES];    /* initial sem count */
+    int           stack_sizes[SMASH_MAX_THREADS];   /* max stack depth per thread; 0 = unlimited */
 } smash_scenario_t;
 
 /*===========================================================================*/
@@ -162,7 +203,22 @@ typedef enum {
     EVT_MUTEX_TIMED_LOCK_BLOCKED,
     EVT_MUTEX_TIMEOUT_EXPIRED,
     EVT_SEM_TIMED_WAIT_BLOCKED,
-    EVT_SEM_TIMEOUT_EXPIRED
+    EVT_SEM_TIMEOUT_EXPIRED,
+    /* Execution context events. */
+    EVT_SYS_LOCK,
+    EVT_SYS_UNLOCK,
+    EVT_ISR_ENTER,
+    EVT_ISR_EXIT,
+    /* Object lifecycle events. */
+    EVT_OBJECT_INIT,
+    EVT_OBJECT_DESTROY,
+    EVT_USE_AFTER_FREE,
+    /* Stack depth events. */
+    EVT_CALL,
+    EVT_RETURN,
+    EVT_STACK_OVERFLOW,
+    /* Context violation event. */
+    EVT_CONTEXT_VIOLATION
 } smash_event_type_t;
 
 typedef struct {
@@ -189,8 +245,11 @@ typedef struct {
     uint8_t  thread_states[SMASH_MAX_THREADS];
     uint8_t  thread_pcs[SMASH_MAX_THREADS];
     uint8_t  thread_priorities[SMASH_MAX_THREADS]; /* boosted priority matters */
+    uint8_t  thread_exec_ctx[SMASH_MAX_THREADS];   /* SMASH_CTX_* enum value */
+    uint8_t  thread_sys_lock_depth[SMASH_MAX_THREADS];
     int8_t   mutex_owners[SMASH_MAX_RESOURCES];
     int8_t   sem_counts[SMASH_MAX_RESOURCES];
+    uint8_t  resource_alive[SMASH_MAX_RESOURCES];  /* 1 = alive, 0 = destroyed */
     int      thread_count;
     int      resource_count;
 } smash_state_snapshot_t;
@@ -359,6 +418,15 @@ bool smash_check_owned_mutex_integrity(const smash_engine_t *engine,
 /* Detect circular wait (wait-for graph cycle) - the fundamental deadlock mechanism. */
 bool smash_check_circular_wait(const smash_engine_t *engine,
                                char *msg, int msg_len);
+/* Detect API context violations:
+ *   - blocking operation (mutex lock, sem wait) called from ISR or SYS_LOCK context
+ *   - unbalanced chSysLock/chSysUnlock pairs
+ *   - ISR_EXIT without matching ISR_ENTER */
+bool smash_check_context_safety(const smash_engine_t *engine,
+                                char *msg, int msg_len);
+/* Detect stack depth overflow: stack_depth > stack_sizes[tid] (when > 0). */
+bool smash_check_stack_depth(const smash_engine_t *engine,
+                             char *msg, int msg_len);
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len);
 
 /*===========================================================================*/

@@ -69,6 +69,31 @@ bool smash_mutex_lock(smash_engine_t *engine, int tid, int res_id) {
     smash_resource_t *mtx = &engine->resources[res_id];
     smash_thread_t   *t   = &engine->threads[tid];
 
+    /* Use-after-free: operating on a destroyed mutex. */
+    if (!mtx->alive) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d mutex_lock on destroyed resource %d (use-after-free)",
+                 tid, res_id);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_USE_AFTER_FREE, tid, res_id, 0);
+        return false;
+    }
+
+    /* Context check: blocking is forbidden in ISR and SYS_LOCK contexts.
+     * chMtxLock is a normal-context-only API (not I-class, not S-class). */
+    if (t->exec_ctx != SMASH_CTX_THREAD) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d mutex_lock called from %s context — "
+                 "blocking not permitted outside thread context",
+                 tid,
+                 t->exec_ctx == SMASH_CTX_ISR ? "ISR" : "SYS_LOCK");
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_CONTEXT_VIOLATION, tid, res_id, (int)t->exec_ctx);
+        return false;
+    }
+
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_MUTEX_LOCK_ATTEMPT, tid, res_id, 0);
 
@@ -141,6 +166,16 @@ void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id) {
     smash_resource_t *mtx   = &engine->resources[res_id];
     smash_thread_t   *owner = &engine->threads[tid];
 
+    if (!mtx->alive) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d mutex_unlock on destroyed resource %d (use-after-free)",
+                 tid, res_id);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_USE_AFTER_FREE, tid, res_id, 0);
+        return;
+    }
+
     if (mtx->owner != tid) {
         engine->failed = true;
         snprintf(engine->fail_msg, sizeof(engine->fail_msg),
@@ -207,6 +242,30 @@ bool smash_sem_wait(smash_engine_t *engine, int tid, int res_id) {
     smash_resource_t *sem = &engine->resources[res_id];
     smash_thread_t   *t   = &engine->threads[tid];
 
+    /* Use-after-free: operating on a destroyed semaphore. */
+    if (!sem->alive) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d sem_wait on destroyed resource %d (use-after-free)",
+                 tid, res_id);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_USE_AFTER_FREE, tid, res_id, 0);
+        return false;
+    }
+
+    /* Context check: chSemWait is forbidden in ISR/SYS_LOCK contexts. */
+    if (t->exec_ctx != SMASH_CTX_THREAD) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d sem_wait called from %s context — "
+                 "blocking not permitted outside thread context",
+                 tid,
+                 t->exec_ctx == SMASH_CTX_ISR ? "ISR" : "SYS_LOCK");
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_CONTEXT_VIOLATION, tid, res_id, (int)t->exec_ctx);
+        return false;
+    }
+
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_SEM_WAIT, tid, res_id, sem->count);
 
@@ -237,6 +296,16 @@ bool smash_sem_wait(smash_engine_t *engine, int tid, int res_id) {
 void smash_sem_signal(smash_engine_t *engine, int tid, int res_id) {
 
     smash_resource_t *sem = &engine->resources[res_id];
+
+    if (!sem->alive) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d sem_signal on destroyed resource %d (use-after-free)",
+                 tid, res_id);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_USE_AFTER_FREE, tid, res_id, 0);
+        return;
+    }
 
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_SEM_SIGNAL, tid, res_id, sem->count);

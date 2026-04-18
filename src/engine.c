@@ -42,6 +42,11 @@ void smash_engine_reset(smash_engine_t *engine) {
         engine->threads[i].blocked_on        = -1;
         engine->threads[i].timeout_ticks     = -1;  /* -1 = infinite wait */
         engine->threads[i].owned_mutex_count = 0;
+        engine->threads[i].exec_ctx          = SMASH_CTX_THREAD;
+        engine->threads[i].sys_lock_depth    = 0;
+        engine->threads[i].isr_depth         = 0;
+        engine->threads[i].stack_depth       = 0;
+        engine->threads[i].stack_watermark   = 0;
     }
 
     /* Init resources. */
@@ -51,6 +56,7 @@ void smash_engine_reset(smash_engine_t *engine) {
         engine->resources[i].owner        = -1;
         engine->resources[i].count        = sc->sem_init[i];
         engine->resources[i].waiter_count = 0;
+        engine->resources[i].alive        = true;
     }
 
     smash_trace_init(&engine->trace);
@@ -213,6 +219,135 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
     case ACT_NOP:
         t->pc++;
         break;
+
+    case ACT_SYS_LOCK:
+        /* chSysLock(): enter system-locked context. */
+        t->sys_lock_depth++;
+        t->exec_ctx = SMASH_CTX_SYS_LOCK;
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SYS_LOCK, tid, -1, t->sys_lock_depth);
+        t->pc++;
+        break;
+
+    case ACT_SYS_UNLOCK:
+        /* chSysUnlock(): exit system-locked context.
+         * Unbalanced unlock (depth already 0) is a violation. */
+        if (t->sys_lock_depth <= 0) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d ACT_SYS_UNLOCK with sys_lock_depth=0 (unbalanced)", tid);
+            smash_trace_log(&engine->trace, engine->step_counter,
+                            EVT_CONTEXT_VIOLATION, tid, -1, 0);
+            return false;
+        }
+        t->sys_lock_depth--;
+        t->exec_ctx = (t->sys_lock_depth > 0) ? SMASH_CTX_SYS_LOCK
+                                               : SMASH_CTX_THREAD;
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SYS_UNLOCK, tid, -1, t->sys_lock_depth);
+        t->pc++;
+        break;
+
+    case ACT_ISR_ENTER:
+        /* Entering an ISR: push context. */
+        if (t->isr_depth >= SMASH_MAX_ISR_DEPTH) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d ISR nesting depth %d exceeds SMASH_MAX_ISR_DEPTH=%d",
+                     tid, t->isr_depth, SMASH_MAX_ISR_DEPTH);
+            return false;
+        }
+        t->isr_depth++;
+        t->exec_ctx = SMASH_CTX_ISR;
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_ISR_ENTER, tid, -1, t->isr_depth);
+        t->pc++;
+        break;
+
+    case ACT_ISR_EXIT:
+        /* Exiting an ISR: pop context. */
+        if (t->isr_depth <= 0) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d ACT_ISR_EXIT with isr_depth=0 (unbalanced)", tid);
+            smash_trace_log(&engine->trace, engine->step_counter,
+                            EVT_CONTEXT_VIOLATION, tid, -1, 0);
+            return false;
+        }
+        t->isr_depth--;
+        if (t->isr_depth == 0) {
+            t->exec_ctx = (t->sys_lock_depth > 0) ? SMASH_CTX_SYS_LOCK
+                                                   : SMASH_CTX_THREAD;
+        }
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_ISR_EXIT, tid, -1, t->isr_depth);
+        t->pc++;
+        break;
+
+    case ACT_OBJECT_INIT: {
+        /* Mark resource as alive (idempotent re-init is allowed). */
+        int rid = act.resource_id;
+        engine->resources[rid].alive = true;
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_OBJECT_INIT, tid, rid, 0);
+        t->pc++;
+        break;
+    }
+
+    case ACT_OBJECT_DESTROY: {
+        /* Mark resource as dead.  Any subsequent operation on it is
+         * a use-after-free — detected by smash_check_object_lifecycle. */
+        int rid = act.resource_id;
+        if (!engine->resources[rid].alive) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d ACT_OBJECT_DESTROY on already-dead resource %d", tid, rid);
+            smash_trace_log(&engine->trace, engine->step_counter,
+                            EVT_CONTEXT_VIOLATION, tid, rid, 0);
+            return false;
+        }
+        engine->resources[rid].alive = false;
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_OBJECT_DESTROY, tid, rid, 0);
+        t->pc++;
+        break;
+    }
+
+    case ACT_CALL: {
+        /* Simulate a function call consuming act.arg abstract stack units. */
+        int units = (act.arg > 0) ? act.arg : 1;
+        t->stack_depth += units;
+        if (t->stack_depth > t->stack_watermark) {
+            t->stack_watermark = t->stack_depth;
+        }
+        int limit = engine->scenario->stack_sizes[tid];
+        if (limit > 0 && t->stack_depth > limit) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d stack overflow: depth=%d limit=%d",
+                     tid, t->stack_depth, limit);
+            smash_trace_log(&engine->trace, engine->step_counter,
+                            EVT_STACK_OVERFLOW, tid, -1, t->stack_depth);
+            return false;
+        }
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_CALL, tid, -1, t->stack_depth);
+        t->pc++;
+        break;
+    }
+
+    case ACT_RETURN: {
+        /* Return from a function call, releasing act.arg stack units. */
+        int units = (act.arg > 0) ? act.arg : 1;
+        t->stack_depth -= units;
+        if (t->stack_depth < 0) {
+            t->stack_depth = 0;  /* clamp: unbalanced CALL/RETURN in scenario */
+        }
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_RETURN, tid, -1, t->stack_depth);
+        t->pc++;
+        break;
+    }
     }
 
     engine->step_counter++;
@@ -255,14 +390,17 @@ smash_state_snapshot_t smash_capture_state(const smash_engine_t *engine) {
     snap.resource_count = engine->scenario->resource_count;
 
     for (int i = 0; i < snap.thread_count; i++) {
-        snap.thread_states[i]     = (uint8_t)engine->threads[i].state;
-        snap.thread_pcs[i]        = (uint8_t)engine->threads[i].pc;
-        snap.thread_priorities[i] = (uint8_t)engine->threads[i].priority;
+        snap.thread_states[i]         = (uint8_t)engine->threads[i].state;
+        snap.thread_pcs[i]            = (uint8_t)engine->threads[i].pc;
+        snap.thread_priorities[i]     = (uint8_t)engine->threads[i].priority;
+        snap.thread_exec_ctx[i]       = (uint8_t)engine->threads[i].exec_ctx;
+        snap.thread_sys_lock_depth[i] = (uint8_t)engine->threads[i].sys_lock_depth;
     }
 
     for (int i = 0; i < snap.resource_count; i++) {
-        snap.mutex_owners[i] = (int8_t)engine->resources[i].owner;
-        snap.sem_counts[i]   = (int8_t)engine->resources[i].count;
+        snap.mutex_owners[i]   = (int8_t)engine->resources[i].owner;
+        snap.sem_counts[i]     = (int8_t)engine->resources[i].count;
+        snap.resource_alive[i] = engine->resources[i].alive ? 1u : 0u;
     }
 
     return snap;

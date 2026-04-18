@@ -19,6 +19,27 @@ static const char *event_name(smash_event_type_t type) {
     case EVT_THREAD_DONE:        return "THREAD_DONE";
     case EVT_DEADLOCK:           return "DEADLOCK";
     case EVT_INVARIANT_FAIL:     return "INVARIANT_FAIL";
+    /* Timeout events */
+    case EVT_MUTEX_TIMED_LOCK_ATTEMPT: return "MTX_TIMED_LOCK_ATTEMPT";
+    case EVT_MUTEX_TIMED_LOCK_BLOCKED: return "MTX_TIMED_LOCK_BLOCKED";
+    case EVT_MUTEX_TIMEOUT_EXPIRED:    return "MTX_TIMEOUT_EXPIRED";
+    case EVT_SEM_TIMED_WAIT_BLOCKED:   return "SEM_TIMED_WAIT_BLOCKED";
+    case EVT_SEM_TIMEOUT_EXPIRED:      return "SEM_TIMEOUT_EXPIRED";
+    /* Execution context events */
+    case EVT_SYS_LOCK:                 return "SYS_LOCK";
+    case EVT_SYS_UNLOCK:               return "SYS_UNLOCK";
+    case EVT_ISR_ENTER:                return "ISR_ENTER";
+    case EVT_ISR_EXIT:                 return "ISR_EXIT";
+    /* Object lifecycle events */
+    case EVT_OBJECT_INIT:              return "OBJ_INIT";
+    case EVT_OBJECT_DESTROY:           return "OBJ_DESTROY";
+    case EVT_USE_AFTER_FREE:           return "USE_AFTER_FREE";
+    /* Stack depth events */
+    case EVT_CALL:                     return "CALL";
+    case EVT_RETURN:                   return "RETURN";
+    case EVT_STACK_OVERFLOW:           return "STACK_OVERFLOW";
+    /* Context violation */
+    case EVT_CONTEXT_VIOLATION:        return "CONTEXT_VIOLATION";
     }
     return "UNKNOWN";
 }

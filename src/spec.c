@@ -311,6 +311,52 @@ bool smash_check_circular_wait(const smash_engine_t *engine,
     return true;
 }
 
+bool smash_check_context_safety(const smash_engine_t *engine,
+                                char *msg, int msg_len) {
+
+    /* Check for unbalanced sys_lock / ISR nesting at thread completion.
+     * A THREAD_DONE thread must have sys_lock_depth == 0 and isr_depth == 0;
+     * otherwise the critical section / ISR was not properly exited. */
+    for (int i = 0; i < engine->scenario->thread_count; i++) {
+        const smash_thread_t *t = &engine->threads[i];
+        if (t->state != THREAD_DONE) continue;
+
+        if (t->sys_lock_depth != 0) {
+            snprintf(msg, (size_t)msg_len,
+                     "CONTEXT: T%d finished with sys_lock_depth=%d "
+                     "(unbalanced chSysLock/chSysUnlock)",
+                     i, t->sys_lock_depth);
+            return false;
+        }
+        if (t->isr_depth != 0) {
+            snprintf(msg, (size_t)msg_len,
+                     "CONTEXT: T%d finished with isr_depth=%d "
+                     "(unbalanced ISR_ENTER/ISR_EXIT)",
+                     i, t->isr_depth);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool smash_check_stack_depth(const smash_engine_t *engine,
+                             char *msg, int msg_len) {
+
+    /* Check stack_depth against per-thread stack_sizes limit (0 = unlimited). */
+    for (int i = 0; i < engine->scenario->thread_count; i++) {
+        int limit = engine->scenario->stack_sizes[i];
+        if (limit <= 0) continue;
+        int depth = engine->threads[i].stack_depth;
+        if (depth > limit) {
+            snprintf(msg, (size_t)msg_len,
+                     "STACK: T%d stack_depth=%d exceeds limit=%d",
+                     i, depth, limit);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
 
     /* Structural integrity — checked after every step. */
@@ -320,6 +366,10 @@ bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
     /* Priority inheritance correctness — owner must be boosted to max-waiter
      * priority; if not, the inheritance chain is broken. */
     if (!smash_check_priority_inversion(engine, msg, msg_len))     return false;
+    /* API context correctness — check balanced sys_lock / ISR at completion. */
+    if (!smash_check_context_safety(engine, msg, msg_len))         return false;
+    /* Stack depth — check against per-thread limits. */
+    if (!smash_check_stack_depth(engine, msg, msg_len))            return false;
     /* NOTE: circular-wait / deadlock checks must NOT be called here.
      * They are detected in explore_dfs via smash_collect_runnable()==0,
      * which increments result->deadlocks.  Including them here counts
