@@ -11,9 +11,6 @@
 void smash_dpor_init(smash_dpor_t *dpor) {
 
     memset(dpor, 0, sizeof(*dpor));
-    for (int i = 0; i < SMASH_MAX_RESOURCES; i++) {
-        dpor->last_access[i] = -1;
-    }
 }
 
 /* Reset history and backtrack set, preserving the struct allocation. */
@@ -21,9 +18,6 @@ void smash_dpor_reset(smash_dpor_t *dpor) {
 
     dpor->history_len    = 0;
     dpor->backtrack_count = 0;
-    for (int i = 0; i < SMASH_MAX_RESOURCES; i++) {
-        dpor->last_access[i] = -1;
-    }
 }
 
 bool smash_dpor_dependent(smash_action_type_t a_type, int a_res,
@@ -52,9 +46,6 @@ void smash_dpor_record(smash_dpor_t *dpor, int tid, int resource_id,
     dpor->history[dpor->history_len].type = type;
     dpor->history_len++;
 
-    if (resource_id >= 0 && resource_id < SMASH_MAX_RESOURCES) {
-        dpor->last_access[resource_id] = tid;
-    }
 }
 
 void smash_dpor_analyze(smash_dpor_t *dpor, const smash_engine_t *engine) {

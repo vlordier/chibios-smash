@@ -259,8 +259,6 @@ typedef struct {
 } smash_backtrack_t;
 
 typedef struct {
-    /* Per-resource: last thread that accessed it */
-    int last_access[SMASH_MAX_RESOURCES];
     /* Backtracking set */
     smash_backtrack_t backtrack[SMASH_MAX_BACKTRACK];
     int               backtrack_count;
