@@ -262,16 +262,24 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
     smash_result_t result;
     memset(&result, 0, sizeof(result));
 
+    /* Clamp zero/negative limits to safe defaults so explore_dfs guards
+     * always trigger correctly (0 max_interleavings would explore nothing). */
+    smash_config_t cfg = *config;
+    if (cfg.max_depth <= 0 || cfg.max_depth > SMASH_MAX_DEPTH)
+        cfg.max_depth = SMASH_MAX_DEPTH;
+    if (cfg.max_interleavings == 0)
+        cfg.max_interleavings = UINT64_MAX;
+
     smash_engine_t engine;
     smash_engine_init(&engine, scenario);
-    engine.dpor_enabled = config->enable_dpor;
-    engine.max_depth = config->max_depth;
-    engine.max_interleavings = config->max_interleavings;
+    engine.dpor_enabled = cfg.enable_dpor;
+    engine.max_depth = cfg.max_depth;
+    engine.max_interleavings = cfg.max_interleavings;
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    explore_dfs(&engine, config, &result, 0);
+    explore_dfs(&engine, &cfg, &result, 0);
     result.max_depth_reached = engine.max_depth_reached;
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
