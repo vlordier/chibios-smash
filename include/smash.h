@@ -160,9 +160,14 @@ typedef struct {
     int                 arg;            /* type-specific parameter:
                                          * ACT_MUTEX_TIMED_LOCK: timeout in ticks
                                          * ACT_SEM_TIMED_WAIT:   timeout in ticks
-                                         * ACT_CALL:             stack units consumed
+                                         * ACT_CALL / ACT_RETURN: stack units
                                          * (all others: 0) */
 } smash_action_t;
+
+/* Convenience macros for building smash_action_t literals without triggering
+ * -Wmissing-field-initializers warnings (arg defaults to 0). */
+#define SMASH_ACT(type_, rid_)       ((smash_action_t){(type_), (rid_), 0})
+#define SMASH_ACT_ARG(type_, rid_, arg_) ((smash_action_t){(type_), (rid_), (arg_)})
 
 /*===========================================================================*/
 /* Scenario (test definition)                                                */

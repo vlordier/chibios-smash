@@ -1,5 +1,6 @@
 CC      = clang
-CFLAGS  = -Wall -Wextra -Wpedantic -std=c11 -O2 -g -I include
+CFLAGS  = -Wall -Wextra -Wpedantic -std=c11 -O2 -g -I include \
+          -Wno-missing-field-initializers
 LDFLAGS =
 
 # Z3 support (optional - set USE_Z3=1 to enable)
