@@ -21,9 +21,16 @@ bool smash_check_no_deadlock(const smash_engine_t *engine,
     if (n > 0) return true;
 
     /* No runnable threads and not all done: deadlock. */
+    int blocked_count = 0;
+    for (int i = 0; i < engine->scenario->thread_count; i++) {
+        if (engine->threads[i].state == THREAD_BLOCKED_MUTEX ||
+            engine->threads[i].state == THREAD_BLOCKED_SEM) {
+            blocked_count++;
+        }
+    }
     snprintf(msg, (size_t)msg_len,
-             "DEADLOCK: no runnable threads, %d threads blocked",
-             engine->scenario->thread_count);
+             "DEADLOCK: no runnable threads, %d/%d threads blocked",
+             blocked_count, engine->scenario->thread_count);
 
     /* Report who is blocked on what. */
     int off = (int)strlen(msg);
@@ -105,10 +112,11 @@ bool smash_check_priority_inversion(const smash_engine_t *engine,
                                     char *msg, int msg_len) {
 
     /* Detect unbounded priority inversion: a high-priority thread is blocked
-     * on a mutex owned by a low-priority thread, while a medium-priority
-     * thread is running.
+     * on a mutex whose owner has a lower current priority.
      *
-     * With correct priority inheritance this should not happen. */
+     * With correct (multi-hop) priority inheritance, the owner's current
+     * priority should always be >= every waiter's priority.  If it is not,
+     * the inheritance chain is broken and a high-priority thread can starve. */
 
     for (int i = 0; i < engine->scenario->resource_count; i++) {
         const smash_resource_t *r = &engine->resources[i];
@@ -117,20 +125,17 @@ bool smash_check_priority_inversion(const smash_engine_t *engine,
         int owner_prio = engine->threads[r->owner].priority;
 
         for (int w = 0; w < r->waiter_count; w++) {
-            int waiter = r->waiters[w];
+            int waiter      = r->waiters[w];
             int waiter_prio = engine->threads[waiter].priority;
 
-            if (waiter_prio <= owner_prio) continue;
-
-            /* High-prio waiter blocked behind low-prio owner.
-             * Check if owner's priority was boosted (inheritance). */
-            if (owner_prio < waiter_prio) {
-                /* Priority inheritance failure: owner should have been
-                 * boosted to at least waiter's priority. */
+            if (waiter_prio > owner_prio) {
                 snprintf(msg, (size_t)msg_len,
                          "PRIORITY INVERSION: T%d (prio %d) blocked on mutex %d "
-                         "owned by T%d (prio %d, not boosted)",
-                         waiter, waiter_prio, i, r->owner, owner_prio);
+                         "owned by T%d (current prio %d, base %d) — "
+                         "inheritance chain not propagated",
+                         waiter, waiter_prio, i,
+                         r->owner, owner_prio,
+                         engine->threads[r->owner].base_priority);
                 return false;
             }
         }
@@ -140,12 +145,15 @@ bool smash_check_priority_inversion(const smash_engine_t *engine,
 
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
 
-    if (!smash_check_mutex_integrity(engine, msg, msg_len)) return false;
-    if (!smash_check_sem_integrity(engine, msg, msg_len))   return false;
-    if (!smash_check_no_deadlock(engine, msg, msg_len))     return false;
-    /* Priority inversion check is informational, not a hard failure
-     * in this model since we implement inheritance. Uncomment to enable:
-     * if (!smash_check_priority_inversion(engine, msg, msg_len)) return false;
-     */
+    /* Structural integrity — checked after every step. */
+    if (!smash_check_mutex_integrity(engine, msg, msg_len))     return false;
+    if (!smash_check_sem_integrity(engine, msg, msg_len))       return false;
+    /* Priority inheritance correctness — owner must be boosted to max-waiter
+     * priority; if not, the inheritance chain is broken. */
+    if (!smash_check_priority_inversion(engine, msg, msg_len))  return false;
+    /* NOTE: deadlock (no runnable threads) is NOT checked here.  It is
+     * detected separately in explore_dfs via smash_collect_runnable()==0,
+     * which increments result->deadlocks.  Including it here would count
+     * deadlocks as violations and break the deadlocks counter. */
     return true;
 }

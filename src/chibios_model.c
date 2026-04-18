@@ -99,11 +99,28 @@ bool smash_mutex_lock(smash_engine_t *engine, int tid, int res_id) {
     t->state      = THREAD_BLOCKED_MUTEX;
     t->blocked_on = res_id;
 
-    /* Priority inheritance: boost owner if this thread has higher priority.
-     * ChibiOS chmtx.c L198-247: follows the mutex chain upwards. */
-    smash_thread_t *owner = &engine->threads[mtx->owner];
-    if (t->priority > owner->priority) {
-        owner->priority = t->priority;
+    /* Multi-hop priority inheritance: follow the wait-for chain upward.
+     *
+     * ChibiOS chmtx.c L198-247: the kernel walks up the mtxlist/WTMTX chain
+     * with 'continue' until it finds a thread that doesn't need boosting or
+     * is blocked on something other than a mutex (WTSEM, READY, etc.).
+     *
+     * Example 3-hop chain: T_high → M_A (owned by T_mid, blocked on M_B)
+     * → M_B (owned by T_low). Both T_mid and T_low must be boosted.
+     *
+     * We stop boosting when:
+     *   - current owner already has priority >= blocker's priority, OR
+     *   - current owner is not blocked on a mutex (chain ends). */
+    int   boost_prio = t->priority;
+    int   cur_tid    = mtx->owner;
+    while (cur_tid >= 0) {
+        smash_thread_t *cur = &engine->threads[cur_tid];
+        if (boost_prio <= cur->priority) break;   /* already high enough */
+        cur->priority = boost_prio;
+        if (cur->state != THREAD_BLOCKED_MUTEX) break;  /* chain ends */
+        int next_mtx = cur->blocked_on;
+        if (next_mtx < 0 || next_mtx >= engine->scenario->resource_count) break;
+        cur_tid = engine->resources[next_mtx].owner;
     }
 
     smash_trace_log(&engine->trace, engine->step_counter,

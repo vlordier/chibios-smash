@@ -69,7 +69,6 @@ typedef struct {
     int                   id;
     /* Mutex fields */
     int                   owner;        /* thread id, -1 if free */
-    int                   owner_orig_prio; /* for priority inheritance */
     /* Semaphore fields */
     int                   count;
     /* Wait queue (shared) */
@@ -153,6 +152,7 @@ typedef struct {
 typedef struct {
     uint8_t  thread_states[SMASH_MAX_THREADS];
     uint8_t  thread_pcs[SMASH_MAX_THREADS];
+    uint8_t  thread_priorities[SMASH_MAX_THREADS]; /* boosted priority matters */
     int8_t   mutex_owners[SMASH_MAX_RESOURCES];
     int8_t   sem_counts[SMASH_MAX_RESOURCES];
     int      thread_count;

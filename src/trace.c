@@ -55,7 +55,12 @@ void smash_trace_dump(const smash_trace_t *trace, FILE *out) {
 
     for (int i = 0; i < trace->count; i++) {
         const smash_trace_event_t *e = &trace->events[i];
-        fprintf(out, "%4u  T%-2d  %-20s", e->step, e->tid, event_name(e->type));
+        /* tid == -1 for system-level events (e.g. DEADLOCK). */
+        if (e->tid >= 0) {
+            fprintf(out, "%4u  T%-2d  %-20s", e->step, e->tid, event_name(e->type));
+        } else {
+            fprintf(out, "%4u  ---  %-20s", e->step, event_name(e->type));
+        }
         if (e->resource_id >= 0) {
             fprintf(out, "  res=%d", e->resource_id);
         }
@@ -113,11 +118,24 @@ int smash_trace_minimize(smash_trace_t *trace, smash_engine_t *engine,
                 }
             }
 
-            /* Run and check if it still fails. */
+            /* Run and check if it still fails (hard model fault, invariant
+             * violation, or deadlock — all three must be covered). */
             smash_engine_init(engine, scenario);
             smash_run_schedule(engine, trial, new_len);
 
-            if (engine->failed) {
+            bool still_fails = engine->failed;
+            if (!still_fails) {
+                char chk_msg[256];
+                still_fails = !smash_check_all(engine, chk_msg, sizeof(chk_msg));
+            }
+            if (!still_fails && !smash_all_done(engine)) {
+                /* Detect deadlock: schedule ended but threads are still blocked
+                 * with no runnable successor. */
+                int rn[SMASH_MAX_THREADS];
+                still_fails = (smash_collect_runnable(engine, rn, SMASH_MAX_THREADS) == 0);
+            }
+
+            if (still_fails) {
                 /* Still fails: keep shorter schedule. */
                 memcpy(trace->schedule, trial, (size_t)new_len * sizeof(int));
                 trace->schedule_len = new_len;

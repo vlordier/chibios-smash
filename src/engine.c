@@ -35,7 +35,6 @@ void smash_engine_reset(smash_engine_t *engine) {
         engine->resources[i].type         = sc->res_types[i];
         engine->resources[i].id           = i;
         engine->resources[i].owner        = -1;
-        engine->resources[i].owner_orig_prio = -1;
         engine->resources[i].count        = sc->sem_init[i];
         engine->resources[i].waiter_count = 0;
     }
@@ -170,8 +169,9 @@ smash_state_snapshot_t smash_capture_state(const smash_engine_t *engine) {
     snap.resource_count = engine->scenario->resource_count;
 
     for (int i = 0; i < snap.thread_count; i++) {
-        snap.thread_states[i] = (uint8_t)engine->threads[i].state;
-        snap.thread_pcs[i]    = (uint8_t)engine->threads[i].pc;
+        snap.thread_states[i]     = (uint8_t)engine->threads[i].state;
+        snap.thread_pcs[i]        = (uint8_t)engine->threads[i].pc;
+        snap.thread_priorities[i] = (uint8_t)engine->threads[i].priority;
     }
 
     for (int i = 0; i < snap.resource_count; i++) {

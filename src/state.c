@@ -28,6 +28,8 @@ uint64_t smash_state_hash(const smash_state_snapshot_t *snap) {
     off += (size_t)snap->thread_count;
     memcpy(buf + off, snap->thread_pcs, (size_t)snap->thread_count);
     off += (size_t)snap->thread_count;
+    memcpy(buf + off, snap->thread_priorities, (size_t)snap->thread_count);
+    off += (size_t)snap->thread_count;
     memcpy(buf + off, snap->mutex_owners, (size_t)snap->resource_count);
     off += (size_t)snap->resource_count;
     memcpy(buf + off, snap->sem_counts, (size_t)snap->resource_count);
@@ -43,8 +45,9 @@ bool smash_state_equal(const smash_state_snapshot_t *a,
     if (a->resource_count != b->resource_count) return false;
 
     for (int i = 0; i < a->thread_count; i++) {
-        if (a->thread_states[i] != b->thread_states[i]) return false;
-        if (a->thread_pcs[i] != b->thread_pcs[i]) return false;
+        if (a->thread_states[i]     != b->thread_states[i])     return false;
+        if (a->thread_pcs[i]        != b->thread_pcs[i])        return false;
+        if (a->thread_priorities[i] != b->thread_priorities[i]) return false;
     }
     for (int i = 0; i < a->resource_count; i++) {
         if (a->mutex_owners[i] != b->mutex_owners[i]) return false;

@@ -258,6 +258,62 @@ static smash_scenario_t sc_unlock_wrong_order(void) {
     return sc;
 }
 
+/* -------------------------------------------------------------------------
+ * SCENARIO 7: True 2-hop priority inheritance chain
+ *
+ * Validates multi-hop inheritance: T2 (high) blocks on M0 owned by T0 (low),
+ * while T0 is ITSELF blocked on M1 owned by T1 (medium).
+ * ChibiOS must transitively boost T1 to T2's priority (chmtx.c L198-247).
+ *
+ * Without multi-hop: T0 boosted to 20, T1 stays at 10.
+ *   → Priority inversion: T0 (prio 20) waiting on M1 owned by T1 (prio 10).
+ * With multi-hop: T0 and T1 both boosted to 20.
+ *   → No inversion.
+ *
+ * The critical interleaving:
+ *   1. T1 locks M1  (T1 owns M1)
+ *   2. T0 locks M0  (T0 owns M0)
+ *   3. T0 tries M1  → blocked on T1 (chain: T0 holds M0, blocked on M1)
+ *   4. T2 tries M0  → blocked on T0 (T2 boosts T0; T0 must boost T1)
+ *
+ * T1 only needs M1 (no ABBA deadlock — T0/T1 form no circular wait).
+ * -------------------------------------------------------------------------*/
+static smash_scenario_t sc_multihop_inheritance(void) {
+
+    smash_scenario_t sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.name = "2-hop priority inheritance chain (multi-hop must propagate)";
+    sc.thread_count = 3;
+    sc.resource_count = 2;
+    sc.priorities[0] = 5;    /* low   */
+    sc.priorities[1] = 10;   /* medium */
+    sc.priorities[2] = 20;   /* high  */
+    sc.res_types[0] = RES_MUTEX;
+    sc.res_types[1] = RES_MUTEX;
+
+    /* T0 (low):  lock(M0) → lock(M1) → unlock(M1) → unlock(M0)
+     * In key interleaving: T0 owns M0 then blocks waiting for M1. */
+    sc.steps[0][0] = (smash_action_t){ACT_MUTEX_LOCK,   0};
+    sc.steps[0][1] = (smash_action_t){ACT_MUTEX_LOCK,   1};
+    sc.steps[0][2] = (smash_action_t){ACT_MUTEX_UNLOCK, 1};
+    sc.steps[0][3] = (smash_action_t){ACT_MUTEX_UNLOCK, 0};
+    sc.step_count[0] = 4;
+
+    /* T1 (medium): lock(M1) → unlock(M1)
+     * Does NOT acquire M0 — avoids ABBA deadlock. */
+    sc.steps[1][0] = (smash_action_t){ACT_MUTEX_LOCK,   1};
+    sc.steps[1][1] = (smash_action_t){ACT_MUTEX_UNLOCK, 1};
+    sc.step_count[1] = 2;
+
+    /* T2 (high): lock(M0) → unlock(M0)
+     * Blocks on T0; boost must propagate T0 → T1 transitively. */
+    sc.steps[2][0] = (smash_action_t){ACT_MUTEX_LOCK,   0};
+    sc.steps[2][1] = (smash_action_t){ACT_MUTEX_UNLOCK, 0};
+    sc.step_count[2] = 2;
+
+    return sc;
+}
+
 /* -------------------------------------------------------------------------*/
 
 static void run(const char *label, smash_scenario_t sc, bool stop_first) {
@@ -321,6 +377,9 @@ int main(void) {
 
     run("6. Mutex unlock out of LIFO order",
         sc_unlock_wrong_order(), true);
+
+    run("7. 2-hop priority inheritance chain (multi-hop propagation)",
+        sc_multihop_inheritance(), false);
 
     return 0;
 }
