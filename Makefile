@@ -49,5 +49,13 @@ asan: CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -O1
 asan: LDFLAGS += -fsanitize=address,undefined
 asan: clean $(TEST_BINS)
 
+help:
+	@echo "SMASH build targets:"
+	@echo "  make          Build all test binaries"
+	@echo "  make test     Build and run all tests (exits 1 on failure)"
+	@echo "  make asan     Clean build with AddressSanitizer + UBSan"
+	@echo "  make clean    Remove build directory"
+	@echo "  make help     Show this message"
+
 clean:
 	rm -rf $(BUILDDIR)
