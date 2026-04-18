@@ -30,7 +30,7 @@ endif
 
 OBJS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))
 
-TESTS = test_mutex_deadlock test_semaphore test_priority_inversion test_chibios_patterns test_dpor_bench test_invariants test_timeout test_context_safety test_object_lifecycle
+TESTS = test_mutex_deadlock test_semaphore test_priority_inversion test_chibios_patterns test_dpor_bench test_invariants test_timeout test_comprehensive test_context_safety test_object_lifecycle
 TEST_BINS = $(patsubst %, $(BUILDDIR)/%, $(TESTS))
 
 # Z3-based symbolic execution tests
