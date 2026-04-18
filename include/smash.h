@@ -62,6 +62,11 @@ typedef struct {
     smash_thread_state_t  state;
     int                   pc;             /* step index within scenario */
     int                   blocked_on;     /* resource id, -1 if none */
+    /* Timeout counter for timed operations (ACT_MUTEX_TIMED_LOCK,
+     * ACT_SEM_TIMED_WAIT). When blocked, this counts down each step.
+     * When it reaches 0, the thread resumes with MSG_TIMEOUT.
+     * -1 means no timeout (infinite wait, like chMtxLock). */
+    int                   timeout_ticks;
     /* LIFO owned-mutex stack (mirrors ChibiOS mtxlist).
      * Matches chmtx.c:378 chDbgAssert(currtp->mtxlist == mp). */
     int                   owned_mutex_stack[SMASH_MAX_RESOURCES];
@@ -100,12 +105,23 @@ typedef enum {
     ACT_SEM_WAIT,
     ACT_SEM_SIGNAL,
     ACT_YIELD,
-    ACT_DONE
+    ACT_DONE,
+    /* Timed operations (model chMtxTimedLock and chSemTimedWait).
+     * These operations block with a timeout counter. If the timeout
+     * expires before the resource is acquired, the thread resumes
+     * with a timeout return code (MSG_TIMEOUT in ChibiOS). */
+    ACT_MUTEX_TIMED_LOCK,
+    ACT_SEM_TIMED_WAIT
 } smash_action_type_t;
 
 typedef struct {
     smash_action_type_t type;
-    int                 resource_id;    /* which mutex/sem, -1 if N/A */
+    int                 resource_id;    /* which resource, SMASH_NO_RESOURCE if N/A */
+    int                 arg;            /* type-specific parameter:
+                                         * ACT_MUTEX_TIMED_LOCK: timeout in ticks
+                                         * ACT_SEM_TIMED_WAIT:   timeout in ticks
+                                         * ACT_CALL:             stack units consumed
+                                         * (all others: 0) */
 } smash_action_t;
 
 /*===========================================================================*/
@@ -140,7 +156,13 @@ typedef enum {
     EVT_YIELD,
     EVT_THREAD_DONE,
     EVT_DEADLOCK,
-    EVT_INVARIANT_FAIL
+    EVT_INVARIANT_FAIL,
+    /* Timeout events (for ACT_MUTEX_TIMED_LOCK, ACT_SEM_TIMED_WAIT). */
+    EVT_MUTEX_TIMED_LOCK_ATTEMPT,
+    EVT_MUTEX_TIMED_LOCK_BLOCKED,
+    EVT_MUTEX_TIMEOUT_EXPIRED,
+    EVT_SEM_TIMED_WAIT_BLOCKED,
+    EVT_SEM_TIMEOUT_EXPIRED
 } smash_event_type_t;
 
 typedef struct {

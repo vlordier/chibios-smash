@@ -40,6 +40,7 @@ void smash_engine_reset(smash_engine_t *engine) {
         engine->threads[i].state             = THREAD_READY;
         engine->threads[i].pc                = 0;
         engine->threads[i].blocked_on        = -1;
+        engine->threads[i].timeout_ticks     = -1;  /* -1 = infinite wait */
         engine->threads[i].owned_mutex_count = 0;
     }
 
@@ -86,6 +87,30 @@ bool smash_all_done(const smash_engine_t *engine) {
 
 bool smash_execute_step(smash_engine_t *engine, int tid) {
 
+    /* Process timeout ticks for all blocked threads with active timeouts.
+     * This simulates the passage of time in ChibiOS's tick-based timeout system.
+     * When a timeout expires, the thread resumes with MSG_TIMEOUT (-1). */
+    for (int i = 0; i < engine->scenario->thread_count; i++) {
+        smash_thread_t *bt = &engine->threads[i];
+        if ((bt->state == THREAD_BLOCKED_MUTEX || bt->state == THREAD_BLOCKED_SEM)
+            && bt->timeout_ticks > 0) {
+            bt->timeout_ticks--;
+            if (bt->timeout_ticks == 0) {
+                /* Timeout expired! Resume thread with MSG_TIMEOUT. */
+                bt->state = THREAD_READY;
+                bt->blocked_on = -1;
+                bt->pc++;  /* Advance past the timed wait/lock */
+                bt->timeout_ticks = -1;
+
+                smash_trace_log(&engine->trace, engine->step_counter,
+                               bt->state == THREAD_BLOCKED_MUTEX ?
+                                   EVT_MUTEX_TIMEOUT_EXPIRED :
+                                   EVT_SEM_TIMEOUT_EXPIRED,
+                               i, -1, 0);
+            }
+        }
+    }
+
     smash_thread_t *t = &engine->threads[tid];
 
     if (t->state != THREAD_READY) {
@@ -123,6 +148,18 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
         /* If blocked, pc stays (will retry when unblocked). */
         break;
 
+    case ACT_MUTEX_TIMED_LOCK: {
+        /* Timed mutex lock (chMtxTimedLock).
+         * act.arg carries the timeout in abstract ticks (must be > 0). */
+        int ticks = (act.arg > 0) ? act.arg : 10;
+        if (smash_mutex_lock(engine, tid, act.resource_id)) {
+            t->pc++;
+        } else if (t->state == THREAD_BLOCKED_MUTEX) {
+            t->timeout_ticks = ticks;
+        }
+        break;
+    }
+
     case ACT_MUTEX_UNLOCK:
         smash_mutex_unlock(engine, tid, act.resource_id);
         t->pc++;
@@ -133,6 +170,18 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
             t->pc++;
         }
         break;
+
+    case ACT_SEM_TIMED_WAIT: {
+        /* Timed semaphore wait (chSemTimedWait).
+         * act.arg carries the timeout in abstract ticks (must be > 0). */
+        int ticks = (act.arg > 0) ? act.arg : 10;
+        if (smash_sem_wait(engine, tid, act.resource_id)) {
+            t->pc++;
+        } else if (t->state == THREAD_BLOCKED_SEM) {
+            t->timeout_ticks = ticks;
+        }
+        break;
+    }
 
     case ACT_SEM_SIGNAL:
         smash_sem_signal(engine, tid, act.resource_id);
