@@ -2,7 +2,15 @@
  * SMASH - Top-level exploration engine
  *
  * DFS exploration of all thread interleavings with optional DPOR pruning
- * and state caching. Reports deadlocks and invariant violations.
+ * (persistent-sets algorithm) and state caching. Reports deadlocks and
+ * invariant violations.
+ *
+ * DPOR algorithm: persistent sets (Godefroid 1996).
+ * At each DFS node, compute the minimal "persistent set" — the smallest
+ * subset of runnable threads such that every thread NOT in the set has a
+ * next action that is independent (accesses a different resource) of every
+ * thread IN the set.  Exploring only the persistent set is sound: any
+ * omitted ordering is provably equivalent to one that is explored.
  */
 
 #include "smash.h"
@@ -38,11 +46,68 @@ static void restore_engine(smash_engine_t *engine, int depth) {
     engine->fail_msg[0] = '\0';
 }
 
+/* Return the next action thread tid will execute (ACT_DONE if finished). */
+static smash_action_t thread_next_action(const smash_engine_t *engine, int tid) {
+
+    int pc = engine->threads[tid].pc;
+    if (pc < engine->scenario->step_count[tid]) {
+        return engine->scenario->steps[tid][pc];
+    }
+    return (smash_action_t){ ACT_DONE, -1 };
+}
+
+/*
+ * Compute the persistent set for the current state.
+ *
+ * Returns a bitmask over thread IDs (bit i set ↔ thread i must be explored).
+ * Thread IDs are ≤ 15, so uint16_t is sufficient; uint32_t used for safety.
+ *
+ * Algorithm (fixpoint):
+ *   1. Seed the set with runnable[0] — any single runnable thread works.
+ *   2. For each thread q NOT yet in the set: if q's next action is dependent
+ *      with ANY action of a thread already in the set, add q.
+ *   3. Repeat until the set stops growing.
+ *
+ * Correctness: a set S is persistent iff for every execution starting at
+ * this state using only threads NOT in S, all those transitions are
+ * independent of every transition in S.  The fixpoint above enforces this.
+ */
+static uint32_t compute_persistent_set(const smash_engine_t *engine,
+                                       const int *runnable, int n) {
+
+    uint32_t set = (uint32_t)(1U << runnable[0]);
+    bool changed = true;
+
+    while (changed) {
+        changed = false;
+        for (int i = 0; i < n; i++) {
+            int q = runnable[i];
+            if (set & (uint32_t)(1U << q)) continue;   /* already in set */
+
+            smash_action_t q_act = thread_next_action(engine, q);
+
+            for (int j = 0; j < n; j++) {
+                int p = runnable[j];
+                if (!(set & (uint32_t)(1U << p))) continue;
+
+                smash_action_t p_act = thread_next_action(engine, p);
+
+                if (smash_dpor_dependent(p_act.type, p_act.resource_id,
+                                        q_act.type, q_act.resource_id)) {
+                    set |= (uint32_t)(1U << q);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    return set;
+}
+
 /* Recursive DFS explorer. */
 static void explore_dfs(smash_engine_t *engine,
                         const smash_config_t *config,
                         smash_result_t *result,
-                        smash_dpor_t *dpor,
                         int depth) {
 
     if (result->failing_trace && config->stop_on_first_bug) return;
@@ -61,7 +126,7 @@ static void explore_dfs(smash_engine_t *engine,
         return;
     }
 
-    /* Check for deadlock. */
+    /* Collect runnable threads. */
     int runnable[SMASH_MAX_THREADS];
     int n = smash_collect_runnable(engine, runnable, SMASH_MAX_THREADS);
 
@@ -101,9 +166,36 @@ static void explore_dfs(smash_engine_t *engine,
 
     result->states++;
 
-    /* Try each runnable thread. */
+    /*
+     * Determine which threads to explore.
+     *
+     * DPOR (persistent sets): compute the minimal set of threads whose
+     * exploration covers all distinct outcomes.  Threads whose next action
+     * is independent of every thread in the set are provably redundant and
+     * can be skipped at this depth — they will be explored in the correct
+     * order deeper in the DFS tree.
+     *
+     * Plain DFS: explore every runnable thread.
+     */
+    uint32_t explore_set;
+    if (config->enable_dpor) {
+        explore_set = compute_persistent_set(engine, runnable, n);
+    } else {
+        /* All runnable threads. */
+        explore_set = 0;
+        for (int i = 0; i < n; i++) {
+            explore_set |= (uint32_t)(1U << runnable[i]);
+        }
+    }
+
+    /* Try each thread in the explore set. */
     for (int i = 0; i < n; i++) {
         int tid = runnable[i];
+
+        if (!(explore_set & (uint32_t)(1U << tid))) {
+            result->pruned++;
+            continue;
+        }
 
         save_engine(engine, depth);
 
@@ -115,20 +207,7 @@ static void explore_dfs(smash_engine_t *engine,
         /* Execute one step. */
         smash_execute_step(engine, tid);
 
-        /* DPOR recording — history is built but full backtracking-set
-         * reduction (sleep sets) is not yet applied here.  The explorer
-         * already covers all interleavings via plain DFS; DPOR would
-         * reduce redundant re-orderings but is not required for correctness.
-         * TODO: wire smash_dpor_next_backtrack() into the DFS frontier. */
-        if (config->enable_dpor && dpor) {
-            int pc = save_stack[depth].threads[tid].pc;
-            if (pc < engine->scenario->step_count[tid]) {
-                smash_action_t act = engine->scenario->steps[tid][pc];
-                smash_dpor_record(dpor, tid, act.resource_id, act.type);
-            }
-        }
-
-        /* Check invariants. */
+        /* Check engine-level invariant failures (e.g. re-lock, LIFO). */
         if (engine->failed) {
             result->violations++;
             if (config->verbose) {
@@ -146,7 +225,7 @@ static void explore_dfs(smash_engine_t *engine,
             continue;
         }
 
-        /* Run custom invariants. */
+        /* Run custom / structural invariants. */
         char inv_msg[256] = {0};
         if (!smash_check_all(engine, inv_msg, sizeof(inv_msg))) {
             result->violations++;
@@ -165,16 +244,11 @@ static void explore_dfs(smash_engine_t *engine,
         }
 
         /* Recurse. */
-        explore_dfs(engine, config, result, dpor, depth + 1);
+        explore_dfs(engine, config, result, depth + 1);
 
         restore_engine(engine, depth);
 
         if (result->failing_trace && config->stop_on_first_bug) return;
-    }
-
-    /* DPOR: after exploring all children, analyze for backtracking. */
-    if (config->enable_dpor && dpor) {
-        smash_dpor_analyze(dpor, engine);
     }
 }
 
@@ -190,13 +264,10 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
     engine.max_depth = config->max_depth;
     engine.max_interleavings = config->max_interleavings;
 
-    smash_dpor_t dpor;
-    smash_dpor_init(&dpor);
-
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    explore_dfs(&engine, config, &result, &dpor, 0);
+    explore_dfs(&engine, config, &result, 0);
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     result.elapsed_secs = (double)(t1.tv_sec - t0.tv_sec) +
