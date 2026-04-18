@@ -43,6 +43,11 @@ void smash_engine_reset(smash_engine_t *engine) {
     engine->step_counter = 0;
     engine->failed = false;
     engine->fail_msg[0] = '\0';
+
+    /* Reset state hash table so re-calling smash_explore on the same engine
+     * does not carry stale visited-state records from a previous run. */
+    memset(engine->state_ht, 0, sizeof(engine->state_ht));
+    engine->state_hash_count = 0;
 }
 
 int smash_collect_runnable(const smash_engine_t *engine, int *out, int max) {
@@ -82,6 +87,17 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
     }
 
     smash_action_t act = engine->scenario->steps[tid][t->pc];
+
+    /* Validate resource_id before dispatching to model functions. */
+    if (act.resource_id != SMASH_NO_RESOURCE &&
+        (act.resource_id < 0 ||
+         act.resource_id >= engine->scenario->resource_count)) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d step %d: resource_id %d out of range [0,%d)",
+                 tid, t->pc, act.resource_id, engine->scenario->resource_count);
+        return false;
+    }
 
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_SCHEDULE, tid, -1, t->priority);
@@ -148,9 +164,17 @@ bool smash_run_schedule(smash_engine_t *engine, const int *schedule, int len) {
     for (int i = 0; i < len; i++) {
         if (smash_all_done(engine)) break;
 
-        engine->trace.schedule[engine->trace.schedule_len++] = schedule[i];
+        int tid = schedule[i];
+        if (tid < 0 || tid >= engine->scenario->thread_count) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "smash_run_schedule: schedule[%d]=%d out of range", i, tid);
+            return false;
+        }
 
-        if (!smash_execute_step(engine, schedule[i])) {
+        engine->trace.schedule[engine->trace.schedule_len++] = tid;
+
+        if (!smash_execute_step(engine, tid)) {
             return false;
         }
         if (engine->failed) {
@@ -180,4 +204,46 @@ smash_state_snapshot_t smash_capture_state(const smash_engine_t *engine) {
     }
 
     return snap;
+}
+
+bool smash_scenario_validate(const smash_scenario_t *scenario,
+                              char *msg, size_t msg_len) {
+
+    if (!scenario) {
+        snprintf(msg, msg_len, "scenario is NULL");
+        return false;
+    }
+    if (scenario->thread_count <= 0 ||
+        scenario->thread_count > SMASH_MAX_THREADS) {
+        snprintf(msg, msg_len,
+                 "thread_count %d out of range [1,%d]",
+                 scenario->thread_count, SMASH_MAX_THREADS);
+        return false;
+    }
+    if (scenario->resource_count < 0 ||
+        scenario->resource_count > SMASH_MAX_RESOURCES) {
+        snprintf(msg, msg_len,
+                 "resource_count %d out of range [0,%d]",
+                 scenario->resource_count, SMASH_MAX_RESOURCES);
+        return false;
+    }
+    for (int t = 0; t < scenario->thread_count; t++) {
+        if (scenario->step_count[t] < 0 ||
+            scenario->step_count[t] > SMASH_MAX_STEPS) {
+            snprintf(msg, msg_len,
+                     "T%d step_count %d out of range [0,%d]",
+                     t, scenario->step_count[t], SMASH_MAX_STEPS);
+            return false;
+        }
+        for (int s = 0; s < scenario->step_count[t]; s++) {
+            int rid = scenario->steps[t][s].resource_id;
+            if (rid != SMASH_NO_RESOURCE &&
+                (rid < 0 || rid >= scenario->resource_count)) {
+                snprintf(msg, msg_len,
+                         "T%d step %d: resource_id %d out of range", t, s, rid);
+                return false;
+            }
+        }
+    }
+    return true;
 }

@@ -276,6 +276,14 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
     return result;
 }
 
+void smash_result_free(smash_result_t *result) {
+
+    if (result) {
+        free(result->failing_trace);
+        result->failing_trace = NULL;
+    }
+}
+
 void smash_result_print(const smash_result_t *result, FILE *out) {
 
     fprintf(out, "\n");

@@ -16,6 +16,16 @@ void smash_dpor_init(smash_dpor_t *dpor) {
     }
 }
 
+/* Reset history and backtrack set, preserving the struct allocation. */
+void smash_dpor_reset(smash_dpor_t *dpor) {
+
+    dpor->history_len    = 0;
+    dpor->backtrack_count = 0;
+    for (int i = 0; i < SMASH_MAX_RESOURCES; i++) {
+        dpor->last_access[i] = -1;
+    }
+}
+
 bool smash_dpor_dependent(smash_action_type_t a_type, int a_res,
                           smash_action_type_t b_type, int b_res) {
 
