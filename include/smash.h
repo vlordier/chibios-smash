@@ -258,8 +258,11 @@ typedef struct {
     int tid;
 } smash_backtrack_t;
 
+/* Sleep set entry: tracks which threads have been explored at a given depth.
+ * Sleep sets complement persistent sets by avoiding re-exploration of the
+ * same thread choice at the same state. */
 typedef struct {
-    /* Backtracking set */
+    /* Backtracking set (persistent sets) */
     smash_backtrack_t backtrack[SMASH_MAX_BACKTRACK];
     int               backtrack_count;
     /* Execution history for dependency analysis */
@@ -269,6 +272,11 @@ typedef struct {
         smash_action_type_t type;
     } history[SMASH_MAX_DEPTH];
     int history_len;
+    /* Sleep sets: at depth d, sleep_set[d] is a bitmask of threads already
+     * explored. Thread i is in the sleep set if bit (1 << i) is set.
+     * This avoids re-exploring the same thread choice at the same state. */
+    uint32_t sleep_set[SMASH_MAX_DEPTH];
+    int      sleep_set_max_depth;
 } smash_dpor_t;
 
 void smash_dpor_init(smash_dpor_t *dpor);
@@ -277,6 +285,11 @@ bool smash_dpor_dependent(smash_action_type_t a_type, int a_res,
                           smash_action_type_t b_type, int b_res);
 void smash_dpor_record(smash_dpor_t *dpor, int tid, int resource_id,
                        smash_action_type_t type);
+/* Sleep set operations: check if thread is in sleep set, add to sleep set. */
+bool smash_dpor_sleep_contains(const smash_dpor_t *dpor, int depth, int tid);
+void smash_dpor_sleep_add(smash_dpor_t *dpor, int depth, int tid);
+void smash_dpor_sleep_propagate(smash_dpor_t *dpor, int depth,
+                                const int *runnable, int n);
 /* NOTE: smash_dpor_analyze is NOT called by explore_dfs; the explorer uses
  * persistent-sets DPOR inline via compute_persistent_set().  This function
  * is available for external post-hoc analysis. */
@@ -338,12 +351,12 @@ void smash_smt_export(const smash_trace_t *trace,
 /*===========================================================================*/
 
 typedef struct {
-    bool     enable_dpor;
-    bool     enable_state_caching;
-    int      max_depth;
-    uint64_t max_interleavings;
-    bool     stop_on_first_bug;
-    bool     verbose;
+    bool     enable_dpor;           /* persistent-sets DPOR pruning (recommended) */
+    bool     enable_state_caching;  /* skip already-explored states (hash-based) */
+    int      max_depth;             /* max DFS depth; 0 → SMASH_MAX_DEPTH */
+    uint64_t max_interleavings;     /* stop after N complete schedules; 0 → unlimited */
+    bool     stop_on_first_bug;     /* halt at the first deadlock or violation */
+    bool     verbose;               /* print each deadlock/violation to stderr */
 } smash_config_t;
 
 typedef struct {
@@ -351,6 +364,7 @@ typedef struct {
     uint64_t states;
     uint64_t cache_pruned;  /* states skipped by hash-based state caching */
     uint64_t dpor_pruned;   /* thread choices skipped by persistent-sets DPOR */
+    uint64_t sleep_pruned;  /* thread choices skipped by sleep sets */
     uint64_t deadlocks;
     uint64_t violations;
     double   elapsed_secs;
