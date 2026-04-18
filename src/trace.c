@@ -26,12 +26,16 @@ static const char *event_name(smash_event_type_t type) {
 void smash_trace_init(smash_trace_t *trace) {
     trace->count = 0;
     trace->schedule_len = 0;
+    trace->truncated = false;
 }
 
 void smash_trace_log(smash_trace_t *trace, uint32_t step,
                      smash_event_type_t type, int tid, int res_id, int arg) {
 
-    if (trace->count >= SMASH_MAX_TRACE) return;
+    if (trace->count >= SMASH_MAX_TRACE) {
+        trace->truncated = true;
+        return;
+    }
 
     trace->events[trace->count++] = (smash_trace_event_t){
         .step        = step,
@@ -68,6 +72,9 @@ void smash_trace_dump(const smash_trace_t *trace, FILE *out) {
             fprintf(out, "  arg=%d", e->arg);
         }
         fprintf(out, "\n");
+    }
+    if (trace->truncated) {
+        fprintf(out, "  [WARNING: trace buffer full; later events were dropped]\n");
     }
     fprintf(out, "=== END TRACE ===\n");
 }
