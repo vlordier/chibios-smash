@@ -216,6 +216,105 @@ bool smash_check_owned_mutex_integrity(const smash_engine_t *engine,
     return true;
 }
 
+bool smash_check_circular_wait(const smash_engine_t *engine,
+                               char *msg, int msg_len) {
+
+    /* Detect circular wait (Coffman condition #4) - the fundamental
+     * mechanism behind deadlocks. Build a wait-for graph and check
+     * for cycles.
+     *
+     * Wait-for graph: edge T_a -> T_b means T_a is blocked waiting
+     * for a resource owned by T_b.
+     *
+     * A cycle in this graph indicates a deadlock. This check catches
+     * circular waits BEFORE they manifest as "no runnable threads",
+     * providing better diagnostic information. */
+
+    /* Build adjacency matrix for the wait-for graph. */
+    bool waits_for[SMASH_MAX_THREADS][SMASH_MAX_THREADS] = {{false}};
+
+    for (int t = 0; t < engine->scenario->thread_count; t++) {
+        const smash_thread_t *th = &engine->threads[t];
+        if (th->state != THREAD_BLOCKED_MUTEX) continue;
+
+        int res_id = th->blocked_on;
+        if (res_id < 0 || res_id >= engine->scenario->resource_count) continue;
+
+        int owner = engine->resources[res_id].owner;
+        if (owner >= 0 && owner != t) {
+            waits_for[t][owner] = true;
+        }
+    }
+
+    /* Detect cycles using DFS. A cycle exists if we can reach a node
+     * from itself. */
+    bool visited[SMASH_MAX_THREADS] = {false};
+    bool in_stack[SMASH_MAX_THREADS] = {false};
+    int  cycle_path[SMASH_MAX_THREADS];
+    int  path_len = 0;
+
+    /* Helper lambda-style macro for cycle detection DFS. */
+    #define DFS_CYCLE_CHECK(start_tid) do {                           \
+        int stack[SMASH_MAX_THREADS];                                 \
+        int stack_ptr[SMASH_MAX_THREADS];                             \
+        int top = 0;                                                  \
+        stack[0] = (start_tid);                                       \
+        stack_ptr[0] = 0;                                             \
+        path_len = 1;                                                 \
+        cycle_path[0] = (start_tid);                                  \
+                                                                      \
+        while (top >= 0) {                                            \
+            int cur = stack[top];                                     \
+            int idx = stack_ptr[top];                                 \
+            bool found_next = false;                                  \
+                                                                      \
+            for (int next = idx; next < engine->scenario->thread_count; next++) { \
+                if (waits_for[cur][next]) {                           \
+                    if (in_stack[next]) {                             \
+                        /* Cycle found! Build diagnostic message. */  \
+                        int off = snprintf(msg, (size_t)msg_len,      \
+                                 "CIRCULAR WAIT (deadlock): ");       \
+                        for (int p = 0; p <= top && off < msg_len; p++) { \
+                            off += snprintf(msg + off, (size_t)(msg_len - off), \
+                                           "T%d -> ", cycle_path[p]); \
+                        }                                             \
+                        snprintf(msg + off, (size_t)(msg_len - off),  \
+                                 "T%d (blocks on T%d)", next, cycle_path[0]); \
+                        return false;                                 \
+                    }                                                 \
+                    if (!visited[next]) {                             \
+                        visited[next] = true;                         \
+                        in_stack[next] = true;                        \
+                        top++;                                        \
+                        stack[top] = next;                            \
+                        stack_ptr[top] = 0;                           \
+                        cycle_path[++path_len-1] = next;              \
+                        found_next = true;                            \
+                        break;                                        \
+                    }                                                 \
+                }                                                     \
+            }                                                         \
+            if (!found_next) {                                        \
+                in_stack[stack[top]] = false;                         \
+                top--;                                                \
+                if (path_len > 0) path_len--;                         \
+            }                                                         \
+        }                                                             \
+    } while(0)
+
+    for (int t = 0; t < engine->scenario->thread_count; t++) {
+        if (!visited[t] && engine->threads[t].state == THREAD_BLOCKED_MUTEX) {
+            visited[t] = true;
+            in_stack[t] = true;
+            DFS_CYCLE_CHECK(t);
+        }
+    }
+
+    #undef DFS_CYCLE_CHECK
+
+    return true;
+}
+
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
 
     /* Structural integrity — checked after every step. */
@@ -225,9 +324,9 @@ bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len) {
     /* Priority inheritance correctness — owner must be boosted to max-waiter
      * priority; if not, the inheritance chain is broken. */
     if (!smash_check_priority_inversion(engine, msg, msg_len))     return false;
-    /* NOTE: deadlock (no runnable threads) is NOT checked here.  It is
-     * detected separately in explore_dfs via smash_collect_runnable()==0,
-     * which increments result->deadlocks.  Including it here would count
-     * deadlocks as violations and break the deadlocks counter. */
+    /* NOTE: circular-wait / deadlock checks must NOT be called here.
+     * They are detected in explore_dfs via smash_collect_runnable()==0,
+     * which increments result->deadlocks.  Including them here counts
+     * deadlocks as violations and zeroes the deadlocks counter. */
     return true;
 }

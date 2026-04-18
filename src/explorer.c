@@ -135,10 +135,14 @@ static void explore_dfs(smash_engine_t *engine,
     int n = smash_collect_runnable(engine, runnable, SMASH_MAX_THREADS);
 
     if (n == 0) {
-        /* Deadlock. */
+        /* Deadlock. Prefer the circular-wait message (shows the cycle) over
+         * the generic "no runnable threads" message when a cycle exists. */
         result->deadlocks++;
         char msg[256];
-        smash_check_no_deadlock(engine, msg, sizeof(msg));
+        if (smash_check_circular_wait(engine, msg, sizeof(msg))) {
+            /* No cycle detected via wait-for graph (e.g. all blocked on sems). */
+            smash_check_no_deadlock(engine, msg, sizeof(msg));
+        }
 
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_DEADLOCK, -1, -1, 0);
@@ -261,6 +265,19 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
 
     smash_result_t result;
     memset(&result, 0, sizeof(result));
+
+    /* Validate scenario before exploration. */
+    char validation_msg[256];
+    if (!smash_scenario_validate(scenario, validation_msg, sizeof(validation_msg))) {
+        result.violations = 1;
+        result.failing_trace = malloc(sizeof(smash_trace_t));
+        if (result.failing_trace) {
+            smash_trace_init(result.failing_trace);
+            smash_trace_log(result.failing_trace, 0, EVT_INVARIANT_FAIL,
+                           -1, -1, 0);
+        }
+        return result;
+    }
 
     /* Clamp zero/negative limits to safe defaults so explore_dfs guards
      * always trigger correctly (0 max_interleavings would explore nothing). */
