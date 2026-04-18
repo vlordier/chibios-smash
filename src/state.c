@@ -4,8 +4,11 @@
 
 #include "smash.h"
 
-/* FNV-1a 64-bit. The non-zero seed guarantees hash != 0 for any input,
- * which lets us use 0 as the "empty" sentinel in the hash table. */
+/* FNV-1a 64-bit hash (Fowler-Noll-Vo 1a).
+ * Reference: http://www.isthe.com/chongo/tech/comp/fnv/
+ * Offset basis: 0xcbf29ce484222325  Prime: 0x100000001b3
+ * The non-zero offset basis guarantees hash(empty) != 0, so 0 is a
+ * safe "empty slot" sentinel in the open-addressing hash table. */
 static uint64_t fnv1a(const void *data, size_t len) {
 
     const uint8_t *p = (const uint8_t *)data;
@@ -19,6 +22,10 @@ static uint64_t fnv1a(const void *data, size_t len) {
     return h ? h : 1ULL;
 }
 
+/* Hash only the meaningful bytes of the snapshot — skip struct padding.
+ * Manually copy each array up to thread_count / resource_count so that
+ * unused trailing slots (initialized to 0 by memset) do not contribute
+ * to the hash and states with the same logical content compare equal. */
 uint64_t smash_state_hash(const smash_state_snapshot_t *snap) {
 
     uint8_t buf[sizeof(smash_state_snapshot_t)];
