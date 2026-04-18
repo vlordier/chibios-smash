@@ -329,8 +329,6 @@ typedef struct {
     uint64_t max_interleavings;
     bool     stop_on_first_bug;
     bool     verbose;
-    smash_invariant_fn *invariants;
-    int      invariant_count;
 } smash_config_t;
 
 typedef struct {
