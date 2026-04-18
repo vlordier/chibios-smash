@@ -21,11 +21,13 @@ void smash_engine_reset(smash_engine_t *engine) {
 
     /* Init threads. */
     for (int i = 0; i < sc->thread_count; i++) {
-        engine->threads[i].id         = i;
-        engine->threads[i].priority   = sc->priorities[i];
-        engine->threads[i].state      = THREAD_READY;
-        engine->threads[i].pc         = 0;
-        engine->threads[i].blocked_on = -1;
+        engine->threads[i].id                = i;
+        engine->threads[i].base_priority     = sc->priorities[i];
+        engine->threads[i].priority          = sc->priorities[i];
+        engine->threads[i].state             = THREAD_READY;
+        engine->threads[i].pc                = 0;
+        engine->threads[i].blocked_on        = -1;
+        engine->threads[i].owned_mutex_count = 0;
     }
 
     /* Init resources. */
@@ -116,6 +118,16 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
         break;
 
     case ACT_DONE:
+        /* ChibiOS does not release mutexes on thread exit — detect the leak. */
+        if (t->owned_mutex_count > 0) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "T%d exited while holding %d mutex(es) — "
+                     "ChibiOS does not auto-release on exit",
+                     tid, t->owned_mutex_count);
+            smash_trace_log(&engine->trace, engine->step_counter,
+                            EVT_INVARIANT_FAIL, tid, -1, t->owned_mutex_count);
+        }
         t->state = THREAD_DONE;
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_THREAD_DONE, tid, -1, 0);

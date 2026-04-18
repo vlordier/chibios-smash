@@ -100,25 +100,41 @@ void smash_smt_export(const smash_trace_t *trace,
     }
     fprintf(out, "\n");
 
-    /* Semaphore: wait must happen after a signal (count > 0). */
-    fprintf(out, "; Semaphore ordering hints\n");
+    /* Semaphore ordering: for each wait on an initially-empty semaphore,
+     * at least one signal must happen before it.  Emit a proper disjunctive
+     * assertion (not a comment) so the solver actually enforces it. */
+    fprintf(out, "; Semaphore ordering constraints\n");
     for (int t1 = 0; t1 < scenario->thread_count; t1++) {
         for (int s1 = 0; s1 < scenario->step_count[t1]; s1++) {
             if (scenario->steps[t1][s1].type != ACT_SEM_WAIT) continue;
             int res = scenario->steps[t1][s1].resource_id;
             if (scenario->sem_init[res] > 0) continue;
 
-            /* There must be a signal before this wait. */
+            /* Collect all signals for this semaphore. */
+            int signals[SMASH_MAX_THREADS * SMASH_MAX_STEPS][2];
+            int nsig = 0;
             for (int t2 = 0; t2 < scenario->thread_count; t2++) {
                 for (int s2 = 0; s2 < scenario->step_count[t2]; s2++) {
                     if (scenario->steps[t2][s2].type != ACT_SEM_SIGNAL) continue;
                     if (scenario->steps[t2][s2].resource_id != res) continue;
-
-                    fprintf(out,
-                            "; SEM %d: signal T%d_%d should precede wait T%d_%d\n",
-                            res, t2, s2, t1, s1);
+                    if (nsig < SMASH_MAX_THREADS * SMASH_MAX_STEPS) {
+                        signals[nsig][0] = t2;
+                        signals[nsig][1] = s2;
+                        nsig++;
+                    }
                 }
             }
+            if (nsig == 0) continue;
+
+            /* (or (< sig0 wait) (< sig1 wait) ...) */
+            fprintf(out, "; SEM %d: wait T%d_%d requires a prior signal\n",
+                    res, t1, s1);
+            fprintf(out, "(assert (or");
+            for (int k = 0; k < nsig; k++) {
+                fprintf(out, " (< step_T%d_%d step_T%d_%d)",
+                        signals[k][0], signals[k][1], t1, s1);
+            }
+            fprintf(out, "))\n");
         }
     }
 

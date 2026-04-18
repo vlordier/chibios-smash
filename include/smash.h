@@ -25,6 +25,8 @@
 #define SMASH_MAX_DEPTH      512
 #define SMASH_MAX_BACKTRACK  4096
 #define SMASH_MAX_STATES     65536
+/* Open-addressing hash table for visited state hashes; ~50% load factor. */
+#define SMASH_STATE_HT_SIZE  (SMASH_MAX_STATES * 2U)
 #define SMASH_MAX_WAITERS    SMASH_MAX_THREADS
 
 /*===========================================================================*/
@@ -42,10 +44,15 @@ typedef enum {
 
 typedef struct {
     int                   id;
-    int                   priority;
+    int                   base_priority;  /* immutable; set at init */
+    int                   priority;       /* current, may be boosted by inheritance */
     smash_thread_state_t  state;
-    int                   pc;           /* step index within scenario */
-    int                   blocked_on;   /* resource id, -1 if none */
+    int                   pc;             /* step index within scenario */
+    int                   blocked_on;     /* resource id, -1 if none */
+    /* LIFO owned-mutex stack (mirrors ChibiOS mtxlist).
+     * Matches chmtx.c:378 chDbgAssert(currtp->mtxlist == mp). */
+    int                   owned_mutex_stack[SMASH_MAX_RESOURCES];
+    int                   owned_mutex_count;
 } smash_thread_t;
 
 /*===========================================================================*/
@@ -182,8 +189,9 @@ typedef struct {
     int               max_depth;
     uint64_t          max_interleavings;
 
-    /* State table (visited states) */
-    uint64_t          state_hashes[SMASH_MAX_STATES];
+    /* State table: open-addressing hash table (0 = empty slot).
+     * FNV-1a with a non-zero seed never produces 0, so 0 is a safe sentinel. */
+    uint64_t          state_ht[SMASH_STATE_HT_SIZE];
     int               state_hash_count;
 
     /* Global step counter */

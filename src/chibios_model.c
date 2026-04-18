@@ -1,51 +1,106 @@
 /*
  * SMASH - ChibiOS primitive models
- * Models mutex (with priority inheritance) and semaphore behavior.
+ *
+ * Models mutex (with full priority inheritance) and semaphore behavior,
+ * matching the semantics of chmtx.c and chsem.c.
  */
 
 #include "smash.h"
 
 /*---------------------------------------------------------------------------*/
-/* Mutex: models ChibiOS chMtxLock / chMtxUnlock with priority inheritance   */
+/* Internal helpers                                                          */
+/*---------------------------------------------------------------------------*/
+
+/* Push a mutex onto the thread's owned-mutex LIFO stack.
+ * Mirrors ChibiOS mtxlist (mp->next = currtp->mtxlist; currtp->mtxlist = mp). */
+static void owned_push(smash_thread_t *t, int res_id) {
+
+    if (t->owned_mutex_count < SMASH_MAX_RESOURCES) {
+        t->owned_mutex_stack[t->owned_mutex_count++] = res_id;
+    }
+}
+
+/* Pop the top of the owned-mutex stack and verify it matches expected res_id.
+ * Returns true if the stack top matches (LIFO order respected).
+ * Mirrors chmtx.c:378 chDbgAssert(currtp->mtxlist == mp, "not next in list"). */
+static bool owned_pop(smash_thread_t *t, int res_id) {
+
+    if (t->owned_mutex_count == 0) return false;
+    if (t->owned_mutex_stack[t->owned_mutex_count - 1] != res_id) return false;
+    t->owned_mutex_count--;
+    return true;
+}
+
+/* Recalculate the thread's working priority after releasing a mutex.
+ * Scans all remaining owned mutexes for the highest-priority waiter.
+ * Matches chmtx.c L391-406 "recalculates the optimal thread priority". */
+static int recalc_priority(const smash_engine_t *engine, int tid,
+                            int released_res) {
+
+    int p = engine->threads[tid].base_priority;
+
+    for (int r = 0; r < engine->scenario->resource_count; r++) {
+        if (r == released_res) continue;
+        if (engine->resources[r].type != RES_MUTEX) continue;
+        if (engine->resources[r].owner != tid) continue;
+
+        const smash_resource_t *m = &engine->resources[r];
+        for (int w = 0; w < m->waiter_count; w++) {
+            int wp = engine->threads[m->waiters[w]].priority;
+            if (wp > p) p = wp;
+        }
+    }
+    return p;
+}
+
+/*---------------------------------------------------------------------------*/
+/* Mutex: models ChibiOS chMtxLock / chMtxUnlock                            */
 /*---------------------------------------------------------------------------*/
 
 bool smash_mutex_lock(smash_engine_t *engine, int tid, int res_id) {
 
     smash_resource_t *mtx = &engine->resources[res_id];
-    smash_thread_t *t = &engine->threads[tid];
+    smash_thread_t   *t   = &engine->threads[tid];
 
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_MUTEX_LOCK_ATTEMPT, tid, res_id, 0);
 
     if (mtx->owner == -1) {
-        /* Free: acquire immediately. */
+        /* Free: acquire. */
         mtx->owner = tid;
-        mtx->owner_orig_prio = t->priority;
+        owned_push(t, res_id);
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_MUTEX_LOCK_ACQUIRED, tid, res_id, 0);
         return true;
     }
 
     if (mtx->owner == tid) {
-        /* Re-lock by same thread: ChibiOS does not allow this (undefined).
-         * Flag as invariant violation. */
+        /* Re-lock by same thread: not allowed without CH_CFG_USE_MUTEXES_RECURSIVE. */
         engine->failed = true;
         snprintf(engine->fail_msg, sizeof(engine->fail_msg),
-                 "T%d re-locked mutex %d (already owner)", tid, res_id);
+                 "T%d re-locked mutex %d (already owner) — "
+                 "recursive mutexes not enabled", tid, res_id);
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_INVARIANT_FAIL, tid, res_id, 0);
         return false;
     }
 
     /* Blocked: add to wait queue. */
-    if (mtx->waiter_count < SMASH_MAX_WAITERS) {
-        mtx->waiters[mtx->waiter_count++] = tid;
+    if (mtx->waiter_count >= SMASH_MAX_WAITERS) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "mutex %d wait queue overflow (>%d waiters)", res_id,
+                 SMASH_MAX_WAITERS);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_INVARIANT_FAIL, tid, res_id, 0);
+        return false;
     }
-    t->state = THREAD_BLOCKED_MUTEX;
+    mtx->waiters[mtx->waiter_count++] = tid;
+    t->state      = THREAD_BLOCKED_MUTEX;
     t->blocked_on = res_id;
 
-    /* Priority inheritance: boost owner if waiter has higher priority.
-     * ChibiOS: higher numeric priority = higher priority. */
+    /* Priority inheritance: boost owner if this thread has higher priority.
+     * ChibiOS chmtx.c L198-247: follows the mutex chain upwards. */
     smash_thread_t *owner = &engine->threads[mtx->owner];
     if (t->priority > owner->priority) {
         owner->priority = t->priority;
@@ -59,8 +114,8 @@ bool smash_mutex_lock(smash_engine_t *engine, int tid, int res_id) {
 
 void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id) {
 
-    smash_resource_t *mtx = &engine->resources[res_id];
-    smash_thread_t *owner = &engine->threads[tid];
+    smash_resource_t *mtx   = &engine->resources[res_id];
+    smash_thread_t   *owner = &engine->threads[tid];
 
     if (mtx->owner != tid) {
         engine->failed = true;
@@ -71,89 +126,51 @@ void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id) {
         return;
     }
 
-    /* ChibiOS LIFO unlock constraint: the mutex being unlocked must be the
-     * most recently locked one (top of the thread's owned-mutex stack).
-     * chmtx.c L378: chDbgAssert(currtp->mtxlist == mp, "not next in list")
-     *
-     * We track the owned-mutex stack as a per-thread linked list.
-     * Check that this mutex is at the top (it was the last one locked). */
-    {
-        /* Find this mutex in the thread's ownership chain.
-         * The mutex 'owned_stack' is tracked implicitly by waiter ordering.
-         * For the LIFO check we scan the resource array: the most recently
-         * acquired mutex by this thread is the one locked at the highest
-         * step counter. We flag out-of-order unlock if the thread owns
-         * another mutex that was locked after this one. */
-        int last_locked_step = -1;
-        int last_locked_res  = -1;
-        for (int r = 0; r < engine->scenario->resource_count; r++) {
-            if (r == res_id) continue;
-            if (engine->resources[r].type != RES_MUTEX) continue;
-            if (engine->resources[r].owner != tid) continue;
-            /* Thread owns resource r — it was locked before or after res_id.
-             * We use the thread PC as a proxy: the mutex locked at a higher
-             * step in the thread's program is the one that should be
-             * unlocked first. Find which step each mutex was locked at. */
-            int lock_step_this = -1, lock_step_other = -1;
-            for (int s = 0; s < engine->scenario->step_count[tid]; s++) {
-                smash_action_t a = engine->scenario->steps[tid][s];
-                if (a.type == ACT_MUTEX_LOCK) {
-                    if (a.resource_id == res_id)  lock_step_this  = s;
-                    if (a.resource_id == r)        lock_step_other = s;
-                }
-            }
-            if (lock_step_other > lock_step_this) {
-                /* Another mutex (r) was locked AFTER res_id — it must be
-                 * unlocked first. Unlocking res_id now is out of order. */
-                last_locked_step = lock_step_other;
-                last_locked_res  = r;
-            }
-        }
-        if (last_locked_res >= 0) {
-            engine->failed = true;
-            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
-                     "T%d: LIFO violation — unlocking mutex %d before mutex %d "
-                     "(locked later at step %d). ChibiOS assertion: 'not next in list'",
-                     tid, res_id, last_locked_res, last_locked_step);
-            smash_trace_log(&engine->trace, engine->step_counter,
-                            EVT_INVARIANT_FAIL, tid, res_id, last_locked_res);
-            return;
-        }
+    /* LIFO constraint: must unlock in reverse acquisition order.
+     * chmtx.c:378 chDbgAssert(currtp->mtxlist == mp, "not next in list") */
+    if (!owned_pop(owner, res_id)) {
+        int top = (owner->owned_mutex_count > 0)
+                  ? owner->owned_mutex_stack[owner->owned_mutex_count - 1]
+                  : -1;
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: LIFO violation — unlocking mutex %d but top of owned "
+                 "stack is mutex %d. ChibiOS: 'not next in list'",
+                 tid, res_id, top);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_INVARIANT_FAIL, tid, res_id, top);
+        return;
     }
-
-    /* Restore original priority (undo inheritance). */
-    owner->priority = mtx->owner_orig_prio;
 
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_MUTEX_UNLOCK, tid, res_id, 0);
 
-    /* Wake highest-priority waiter (ChibiOS priority-ordered). */
+    /* Recalculate owner priority from base + remaining owned mutexes.
+     * Matches chmtx.c L391-406. */
+    owner->priority = recalc_priority(engine, tid, res_id);
+
+    /* Wake highest-priority waiter. */
     if (mtx->waiter_count > 0) {
         int best = 0;
         for (int i = 1; i < mtx->waiter_count; i++) {
-            int wi = mtx->waiters[i];
-            int wb = mtx->waiters[best];
-            if (engine->threads[wi].priority > engine->threads[wb].priority) {
+            if (engine->threads[mtx->waiters[i]].priority >
+                engine->threads[mtx->waiters[best]].priority) {
                 best = i;
             }
         }
 
-        int woken = mtx->waiters[best];
-        /* Remove from wait queue. */
-        mtx->waiters[best] = mtx->waiters[--mtx->waiter_count];
-
-        /* Transfer ownership. */
-        mtx->owner = woken;
-        mtx->owner_orig_prio = engine->threads[woken].priority;
-        engine->threads[woken].state = THREAD_READY;
-        engine->threads[woken].blocked_on = -1;
-        engine->threads[woken].pc++; /* advance past the lock step */
+        int woken                              = mtx->waiters[best];
+        mtx->waiters[best]                     = mtx->waiters[--mtx->waiter_count];
+        mtx->owner                             = woken;
+        engine->threads[woken].state           = THREAD_READY;
+        engine->threads[woken].blocked_on      = -1;
+        engine->threads[woken].pc++;           /* lock succeeded; advance past it */
+        owned_push(&engine->threads[woken], res_id);
 
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_MUTEX_LOCK_ACQUIRED, woken, res_id, 0);
     } else {
         mtx->owner = -1;
-        mtx->owner_orig_prio = -1;
     }
 }
 
@@ -164,7 +181,7 @@ void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id) {
 bool smash_sem_wait(smash_engine_t *engine, int tid, int res_id) {
 
     smash_resource_t *sem = &engine->resources[res_id];
-    smash_thread_t *t = &engine->threads[tid];
+    smash_thread_t   *t   = &engine->threads[tid];
 
     smash_trace_log(&engine->trace, engine->step_counter,
                     EVT_SEM_WAIT, tid, res_id, sem->count);
@@ -174,11 +191,17 @@ bool smash_sem_wait(smash_engine_t *engine, int tid, int res_id) {
         return true;
     }
 
-    /* Blocked. */
-    if (sem->waiter_count < SMASH_MAX_WAITERS) {
-        sem->waiters[sem->waiter_count++] = tid;
+    if (sem->waiter_count >= SMASH_MAX_WAITERS) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "semaphore %d wait queue overflow (>%d waiters)", res_id,
+                 SMASH_MAX_WAITERS);
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_INVARIANT_FAIL, tid, res_id, 0);
+        return false;
     }
-    t->state = THREAD_BLOCKED_SEM;
+    sem->waiters[sem->waiter_count++] = tid;
+    t->state      = THREAD_BLOCKED_SEM;
     t->blocked_on = res_id;
 
     smash_trace_log(&engine->trace, engine->step_counter,
@@ -195,22 +218,20 @@ void smash_sem_signal(smash_engine_t *engine, int tid, int res_id) {
                     EVT_SEM_SIGNAL, tid, res_id, sem->count);
 
     if (sem->waiter_count > 0) {
-        /* Wake highest-priority waiter. */
+        /* Wake highest-priority waiter (matches CH_CFG_USE_SEMAPHORES_PRIORITY). */
         int best = 0;
         for (int i = 1; i < sem->waiter_count; i++) {
-            int wi = sem->waiters[i];
-            int wb = sem->waiters[best];
-            if (engine->threads[wi].priority > engine->threads[wb].priority) {
+            if (engine->threads[sem->waiters[i]].priority >
+                engine->threads[sem->waiters[best]].priority) {
                 best = i;
             }
         }
 
-        int woken = sem->waiters[best];
-        sem->waiters[best] = sem->waiters[--sem->waiter_count];
-
-        engine->threads[woken].state = THREAD_READY;
+        int woken                         = sem->waiters[best];
+        sem->waiters[best]                = sem->waiters[--sem->waiter_count];
+        engine->threads[woken].state      = THREAD_READY;
         engine->threads[woken].blocked_on = -1;
-        engine->threads[woken].pc++; /* advance past the wait step */
+        engine->threads[woken].pc++;      /* wait succeeded; advance past it */
 
         smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_SEM_WAKEUP, woken, res_id, 0);

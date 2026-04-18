@@ -47,6 +47,7 @@ static void explore_dfs(smash_engine_t *engine,
 
     if (result->failing_trace && config->stop_on_first_bug) return;
     if (result->interleavings >= config->max_interleavings) return;
+    if (depth >= SMASH_MAX_DEPTH) return;  /* hard guard on save-stack bounds */
     if (depth >= config->max_depth) {
         if ((uint64_t)depth > engine->max_depth_reached) {
             engine->max_depth_reached = (uint64_t)depth;
@@ -114,7 +115,11 @@ static void explore_dfs(smash_engine_t *engine,
         /* Execute one step. */
         smash_execute_step(engine, tid);
 
-        /* DPOR: record this action for dependency analysis. */
+        /* DPOR recording — history is built but full backtracking-set
+         * reduction (sleep sets) is not yet applied here.  The explorer
+         * already covers all interleavings via plain DFS; DPOR would
+         * reduce redundant re-orderings but is not required for correctness.
+         * TODO: wire smash_dpor_next_backtrack() into the DFS frontier. */
         if (config->enable_dpor && dpor) {
             int pc = save_stack[depth].threads[tid].pc;
             if (pc < engine->scenario->step_count[tid]) {

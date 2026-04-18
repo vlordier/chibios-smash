@@ -4,7 +4,8 @@
 
 #include "smash.h"
 
-/* FNV-1a 64-bit hash. */
+/* FNV-1a 64-bit. The non-zero seed guarantees hash != 0 for any input,
+ * which lets us use 0 as the "empty" sentinel in the hash table. */
 static uint64_t fnv1a(const void *data, size_t len) {
 
     const uint8_t *p = (const uint8_t *)data;
@@ -14,14 +15,12 @@ static uint64_t fnv1a(const void *data, size_t len) {
         h ^= p[i];
         h *= 0x100000001b3ULL;
     }
-    return h;
+    /* Guarantee non-zero (only affects the astronomically unlikely zero hash). */
+    return h ? h : 1ULL;
 }
 
 uint64_t smash_state_hash(const smash_state_snapshot_t *snap) {
 
-    /* Hash the meaningful portion of the snapshot. */
-    size_t len = sizeof(uint8_t) * (size_t)snap->thread_count * 2 +
-                 sizeof(int8_t) * (size_t)snap->resource_count * 2;
     uint8_t buf[sizeof(smash_state_snapshot_t)];
     size_t off = 0;
 
@@ -34,7 +33,6 @@ uint64_t smash_state_hash(const smash_state_snapshot_t *snap) {
     memcpy(buf + off, snap->sem_counts, (size_t)snap->resource_count);
     off += (size_t)snap->resource_count;
 
-    (void)len;
     return fnv1a(buf, off);
 }
 
@@ -55,19 +53,30 @@ bool smash_state_equal(const smash_state_snapshot_t *a,
     return true;
 }
 
+/* Open-addressing lookup: O(1) average, O(n) worst case. */
 bool smash_state_visited(smash_engine_t *engine, uint64_t hash) {
 
-    for (int i = 0; i < engine->state_hash_count; i++) {
-        if (engine->state_hashes[i] == hash) {
-            return true;
-        }
+    uint64_t slot = hash & (SMASH_STATE_HT_SIZE - 1U);
+    for (uint64_t i = 0; i < SMASH_STATE_HT_SIZE; i++) {
+        uint64_t idx = (slot + i) & (SMASH_STATE_HT_SIZE - 1U);
+        if (engine->state_ht[idx] == 0)   return false;  /* empty: not found */
+        if (engine->state_ht[idx] == hash) return true;
     }
-    return false;
+    return false; /* table full — treat as not visited */
 }
 
 void smash_state_mark_visited(smash_engine_t *engine, uint64_t hash) {
 
-    if (engine->state_hash_count < SMASH_MAX_STATES) {
-        engine->state_hashes[engine->state_hash_count++] = (int)hash;
+    if (engine->state_hash_count >= SMASH_MAX_STATES) return;
+
+    uint64_t slot = hash & (SMASH_STATE_HT_SIZE - 1U);
+    for (uint64_t i = 0; i < SMASH_STATE_HT_SIZE; i++) {
+        uint64_t idx = (slot + i) & (SMASH_STATE_HT_SIZE - 1U);
+        if (engine->state_ht[idx] == 0) {
+            engine->state_ht[idx] = hash;    /* no cast — stays uint64_t */
+            engine->state_hash_count++;
+            return;
+        }
+        if (engine->state_ht[idx] == hash) return; /* already present */
     }
 }
