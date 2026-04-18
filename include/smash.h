@@ -18,9 +18,11 @@
 /* Configuration                                                             */
 /*===========================================================================*/
 
+#define SMASH_VERSION        "1.1.0"
+
 #define SMASH_MAX_THREADS    16
 #define SMASH_MAX_RESOURCES  16
-#define SMASH_MAX_STEPS      256
+#define SMASH_MAX_STEPS      255   /* max steps per thread (fits in uint8_t PC) */
 #define SMASH_MAX_TRACE      65536
 #define SMASH_MAX_DEPTH      512
 #define SMASH_MAX_BACKTRACK  4096
@@ -28,6 +30,19 @@
 /* Open-addressing hash table for visited state hashes; ~50% load factor. */
 #define SMASH_STATE_HT_SIZE  (SMASH_MAX_STATES * 2U)
 #define SMASH_MAX_WAITERS    SMASH_MAX_THREADS
+
+/* Sentinel for "no resource applicable" in actions and trace events. */
+#define SMASH_NO_RESOURCE    (-1)
+
+/* Compile-time safety guards. */
+_Static_assert(SMASH_MAX_THREADS <= 32,
+    "SMASH_MAX_THREADS must fit in a uint32_t persistent-set bitmask");
+_Static_assert(SMASH_MAX_STEPS <= 255,
+    "SMASH_MAX_STEPS must fit in a uint8_t thread-PC snapshot");
+_Static_assert((SMASH_STATE_HT_SIZE & (SMASH_STATE_HT_SIZE - 1U)) == 0,
+    "SMASH_STATE_HT_SIZE must be a power of two for open-addressing");
+_Static_assert(SMASH_MAX_DEPTH <= SMASH_MAX_TRACE,
+    "Save-stack depth must not exceed trace event buffer size");
 
 /*===========================================================================*/
 /* Thread model                                                              */
