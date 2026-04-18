@@ -2,19 +2,28 @@
  * SMASH - Top-level exploration engine
  *
  * DFS exploration of all thread interleavings with optional DPOR pruning
- * (persistent-sets algorithm) and state caching. Reports deadlocks and
+ * (persistent sets + sleep sets) and state caching. Reports deadlocks and
  * invariant violations.
  *
- * DPOR algorithm: persistent sets (Godefroid 1996).
+ * DPOR algorithm: persistent sets (Godefroid 1996) + sleep sets.
  * At each DFS node, compute the minimal "persistent set" — the smallest
  * subset of runnable threads such that every thread NOT in the set has a
  * next action that is independent (accesses a different resource) of every
  * thread IN the set.  Exploring only the persistent set is sound: any
  * omitted ordering is provably equivalent to one that is explored.
+ *
+ * Sleep sets: track which threads have already been explored at each state.
+ * When backtracking, propagate sleep set entries to avoid re-exploring
+ * independent thread choices. Together with persistent sets, this provides
+ * optimal DPOR (one interleaving per Mazurkiewicz trace).
  */
 
 #include "smash.h"
 #include <time.h>
+
+/* Global DPOR context (persistent sets + sleep sets). */
+static smash_dpor_t g_dpor;
+static bool g_dpor_initialized = false;
 
 /* Saved engine state for backtracking. */
 typedef struct {
@@ -177,17 +186,23 @@ static void explore_dfs(smash_engine_t *engine,
     /*
      * Determine which threads to explore.
      *
-     * DPOR (persistent sets): compute the minimal set of threads whose
-     * exploration covers all distinct outcomes.  Threads whose next action
-     * is independent of every thread in the set are provably redundant and
-     * can be skipped at this depth — they will be explored in the correct
-     * order deeper in the DFS tree.
+     * DPOR (persistent sets + sleep sets):
+     * 1. Compute the persistent set (minimal set covering all outcomes)
+     * 2. Remove threads already in the sleep set (already explored)
      *
      * Plain DFS: explore every runnable thread.
      */
     uint32_t explore_set;
     if (config->enable_dpor) {
         explore_set = compute_persistent_set(engine, runnable, n);
+
+        /* Remove threads in sleep set (already explored at this state). */
+        for (int i = 0; i < n; i++) {
+            int tid = runnable[i];
+            if (smash_dpor_sleep_contains(&g_dpor, depth, tid)) {
+                explore_set &= ~(uint32_t)(1U << tid);
+            }
+        }
     } else {
         /* All runnable threads. */
         explore_set = 0;
@@ -201,8 +216,19 @@ static void explore_dfs(smash_engine_t *engine,
         int tid = runnable[i];
 
         if (!(explore_set & (uint32_t)(1U << tid))) {
-            result->dpor_pruned++;
+            /* Check if pruned by sleep set vs persistent set. */
+            if (config->enable_dpor &&
+                smash_dpor_sleep_contains(&g_dpor, depth, tid)) {
+                result->sleep_pruned++;
+            } else {
+                result->dpor_pruned++;
+            }
             continue;
+        }
+
+        /* Add thread to sleep set BEFORE exploring (will be propagated on backtrack). */
+        if (config->enable_dpor) {
+            smash_dpor_sleep_add(&g_dpor, depth, tid);
         }
 
         save_engine(engine, depth);
@@ -329,6 +355,9 @@ void smash_result_print(const smash_result_t *result, FILE *out) {
     fprintf(out, "  Max depth reached      : %llu\n", result->max_depth_reached);
     fprintf(out, "  Elapsed                : %.3f s\n", result->elapsed_secs);
     fprintf(out, "========================================\n");
+    if (result->max_depth_reached > 0) {
+        fprintf(out, "  [WARNING: depth limit hit — some paths may be incomplete]\n");
+    }
 
     if (result->failing_trace) {
         fprintf(out, "\nFirst failing trace:\n");
