@@ -7,6 +7,19 @@
 
 void smash_engine_init(smash_engine_t *engine, const smash_scenario_t *scenario) {
 
+    /* Validate scenario before touching anything — catches OOB resource IDs
+     * and other mis-configurations before they cause silent corruption. */
+    char val_msg[256];
+    if (!smash_scenario_validate(scenario, val_msg, sizeof(val_msg))) {
+        /* Scenario is invalid: mark engine as failed immediately so the
+         * caller can detect the problem via engine->failed. */
+        memset(engine, 0, sizeof(*engine));
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "smash_engine_init: invalid scenario: %s", val_msg);
+        return;
+    }
+
     memset(engine, 0, sizeof(*engine));
     engine->scenario = scenario;
     engine->max_depth = SMASH_MAX_DEPTH;
