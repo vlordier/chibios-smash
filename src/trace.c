@@ -89,8 +89,13 @@ void smash_trace_dump_json(const smash_trace_t *trace, FILE *out) {
 
     for (int i = 0; i < trace->count; i++) {
         const smash_trace_event_t *e = &trace->events[i];
-        fprintf(out, "    {\"step\":%u,\"type\":\"%s\",\"tid\":%d",
-                e->step, event_name(e->type), e->tid);
+        if (e->tid >= 0) {
+            fprintf(out, "    {\"step\":%u,\"type\":\"%s\",\"tid\":%d",
+                    e->step, event_name(e->type), e->tid);
+        } else {
+            fprintf(out, "    {\"step\":%u,\"type\":\"%s\"",
+                    e->step, event_name(e->type));
+        }
         if (e->resource_id >= 0) {
             fprintf(out, ",\"resource\":%d", e->resource_id);
         }
