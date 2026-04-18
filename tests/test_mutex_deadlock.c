@@ -88,15 +88,15 @@ int main(void) {
     if (r1.failing_trace) {
         printf("\nJSON trace:\n");
         smash_trace_dump_json(r1.failing_trace, stdout);
-        free(r1.failing_trace);
     }
+    smash_result_free(&r1);
 
     /* Test 2: Safe ordering - should find no deadlocks. */
     printf("\n=== Test 2: Safe ordering scenario ===\n");
     smash_scenario_t sc2 = safe_ordering();
     smash_result_t r2 = smash_explore(&sc2, &config);
     smash_result_print(&r2, stdout);
-    free(r2.failing_trace);
+    smash_result_free(&r2);
 
     /* Export SMT for the deadlock scenario. */
     printf("\n=== SMT-LIB2 export (ABBA) ===\n");
