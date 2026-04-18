@@ -316,7 +316,10 @@ static smash_scenario_t sc_multihop_inheritance(void) {
 
 /* -------------------------------------------------------------------------*/
 
-static void run(const char *label, smash_scenario_t sc, bool stop_first) {
+/* Returns 1 on pass, 0 on failure.
+ * expect_violations / expect_deadlocks: -1 means "don't check". */
+static int run(const char *label, smash_scenario_t sc, bool stop_first,
+               int expect_violations, int expect_deadlocks) {
 
     printf("\n=== %s ===\n", label);
 
@@ -326,11 +329,24 @@ static void run(const char *label, smash_scenario_t sc, bool stop_first) {
         .max_depth            = 128,
         .max_interleavings    = 500000,
         .stop_on_first_bug    = stop_first,
-        .verbose              = false,  /* reduce noise; summary is enough */
+        .verbose              = false,
     };
 
     smash_result_t r = smash_explore(&sc, &config);
     smash_result_print(&r, stdout);
+
+    int passed = 1;
+
+    if (expect_violations >= 0 && (int)r.violations != expect_violations) {
+        fprintf(stderr, "FAIL [%s]: expected %d violations, got %llu\n",
+                label, expect_violations, r.violations);
+        passed = 0;
+    }
+    if (expect_deadlocks >= 0 && (int)r.deadlocks != expect_deadlocks) {
+        fprintf(stderr, "FAIL [%s]: expected %d deadlocks, got %llu\n",
+                label, expect_deadlocks, r.deadlocks);
+        passed = 0;
+    }
 
     if (r.failing_trace) {
         printf("\nFirst failing trace:\n");
@@ -338,9 +354,7 @@ static void run(const char *label, smash_scenario_t sc, bool stop_first) {
 
         /* Save JSON for viz.py */
         char fname[128];
-        snprintf(fname, sizeof(fname), "build/%s.json",
-                 sc.name);
-        /* Replace spaces with underscores for filename. */
+        snprintf(fname, sizeof(fname), "build/%s.json", sc.name);
         for (char *p = fname + 6; *p; p++) {
             if (*p == ' ' || *p == '(' || *p == ')') *p = '_';
         }
@@ -350,9 +364,9 @@ static void run(const char *label, smash_scenario_t sc, bool stop_first) {
             fclose(f);
             printf("JSON trace written to %s\n", fname);
         }
-
-        free(r.failing_trace);
     }
+    smash_result_free(&r);
+    return passed;
 }
 
 int main(void) {
@@ -360,26 +374,27 @@ int main(void) {
     printf("SMASH — ChibiOS pattern verification\n");
     printf("Scenarios derived from chmtx.c and chsem.c\n");
 
-    run("1. Multi-hop priority inheritance",
-        sc_priority_chain(), false);
+    int ok = 1;
+    ok &= run("1. Multi-hop priority inheritance",
+              sc_priority_chain(), false, 0, 0);
 
-    run("2. Semaphore inside mutex (priority chain breaks at WTSEM)",
-        sc_sem_inside_mutex(), false);
+    ok &= run("2. Semaphore inside mutex (priority chain breaks at WTSEM)",
+              sc_sem_inside_mutex(), false, 0, 0);
 
-    run("3. Priority restoration after multi-mutex unlock",
-        sc_unlock_priority_restore(), false);
+    ok &= run("3. Priority restoration after multi-mutex unlock",
+              sc_unlock_priority_restore(), false, 0, 0);
 
-    run("4. chSemSignalWait pipeline atomicity",
-        sc_signal_wait_pipeline(), false);
+    ok &= run("4. chSemSignalWait pipeline atomicity",
+              sc_signal_wait_pipeline(), false, 0, 0);
 
-    run("5. Thread exits holding mutex",
-        sc_exit_with_mutex(), true);
+    ok &= run("5. Thread exits holding mutex",
+              sc_exit_with_mutex(), true, 1, 0);
 
-    run("6. Mutex unlock out of LIFO order",
-        sc_unlock_wrong_order(), true);
+    ok &= run("6. Mutex unlock out of LIFO order",
+              sc_unlock_wrong_order(), true, 1, 0);
 
-    run("7. 2-hop priority inheritance chain (multi-hop propagation)",
-        sc_multihop_inheritance(), false);
+    ok &= run("7. 2-hop priority inheritance chain (multi-hop propagation)",
+              sc_multihop_inheritance(), false, 0, 0);
 
-    return 0;
+    return ok ? 0 : 1;
 }
