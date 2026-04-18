@@ -17,7 +17,7 @@ SRCS = $(SRCDIR)/engine.c \
 
 OBJS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))
 
-TESTS = test_mutex_deadlock test_semaphore test_priority_inversion
+TESTS = test_mutex_deadlock test_semaphore test_priority_inversion test_chibios_patterns
 TEST_BINS = $(patsubst %, $(BUILDDIR)/%, $(TESTS))
 
 .PHONY: all clean test

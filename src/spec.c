@@ -55,10 +55,14 @@ bool smash_check_mutex_integrity(const smash_engine_t *engine,
             return false;
         }
 
-        /* Owner thread must not be blocked. */
-        if (r->owner >= 0 && engine->threads[r->owner].state == THREAD_BLOCKED_MUTEX) {
+        /* Owner thread must not be done or in an impossible state.
+         * NOTE: a thread MAY own a mutex while blocked waiting for another
+         * mutex — that is the normal state in a deadlock scenario and is
+         * intentional. Only flag impossible ownership states. */
+        if (r->owner >= 0 &&
+            engine->threads[r->owner].state == THREAD_DONE) {
             snprintf(msg, (size_t)msg_len,
-                     "MUTEX %d: owner T%d is blocked", i, r->owner);
+                     "MUTEX %d: owner T%d has exited while holding mutex", i, r->owner);
             return false;
         }
 
