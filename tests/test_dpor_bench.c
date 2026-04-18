@@ -85,11 +85,13 @@ static void run(const char *label, const smash_scenario_t *sc,
 
     smash_result_t r = smash_explore(sc, &cfg);
 
-    printf("  %-38s  iters=%6llu  states=%6llu  pruned=%6llu  t=%.4fs\n",
+    printf("  %-38s  iters=%6llu  states=%6llu"
+           "  cache=%5llu  dpor=%5llu  t=%.4fs\n",
            label,
            r.interleavings,
            r.states,
-           r.pruned,
+           r.cache_pruned,
+           r.dpor_pruned,
            r.elapsed_secs);
 
     if (r.failing_trace) {

@@ -158,7 +158,7 @@ static void explore_dfs(smash_engine_t *engine,
         uint64_t hash = smash_state_hash(&snap);
 
         if (smash_state_visited(engine, hash)) {
-            result->pruned++;
+            result->cache_pruned++;
             return;
         }
         smash_state_mark_visited(engine, hash);
@@ -193,7 +193,7 @@ static void explore_dfs(smash_engine_t *engine,
         int tid = runnable[i];
 
         if (!(explore_set & (uint32_t)(1U << tid))) {
-            result->pruned++;
+            result->dpor_pruned++;
             continue;
         }
 
@@ -284,7 +284,8 @@ void smash_result_print(const smash_result_t *result, FILE *out) {
     fprintf(out, "========================================\n");
     fprintf(out, "  Interleavings explored : %llu\n", result->interleavings);
     fprintf(out, "  States visited         : %llu\n", result->states);
-    fprintf(out, "  Pruned (cached/DPOR)   : %llu\n", result->pruned);
+    fprintf(out, "  Pruned by cache        : %llu\n", result->cache_pruned);
+    fprintf(out, "  Pruned by DPOR         : %llu\n", result->dpor_pruned);
     fprintf(out, "  Deadlocks found        : %llu\n", result->deadlocks);
     fprintf(out, "  Invariant violations   : %llu\n", result->violations);
     fprintf(out, "  Elapsed                : %.3f s\n", result->elapsed_secs);

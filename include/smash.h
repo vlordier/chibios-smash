@@ -334,7 +334,8 @@ typedef struct {
 typedef struct {
     uint64_t interleavings;
     uint64_t states;
-    uint64_t pruned;
+    uint64_t cache_pruned;  /* states skipped by hash-based state caching */
+    uint64_t dpor_pruned;   /* thread choices skipped by persistent-sets DPOR */
     uint64_t deadlocks;
     uint64_t violations;
     double   elapsed_secs;
@@ -345,5 +346,9 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
                              const smash_config_t *config);
 
 void smash_result_print(const smash_result_t *result, FILE *out);
+
+/* Free heap-allocated fields inside a result (the failing_trace pointer).
+ * Safe to call with a zeroed or already-freed result. */
+void smash_result_free(smash_result_t *result);
 
 #endif /* SMASH_H */
