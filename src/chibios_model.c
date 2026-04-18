@@ -327,8 +327,297 @@ void smash_sem_signal(smash_engine_t *engine, int tid, int res_id) {
         engine->threads[woken].pc++;      /* wait succeeded; advance past it */
 
         smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_USE_AFTER_FREE, tid, res_id, 0);
+        return;
+    }
+
+    smash_trace_log(&engine->trace, engine->step_counter,
+                    EVT_SEM_SIGNAL, tid, res_id, sem->count);
+
+    if (sem->waiter_count > 0) {
+        /* Wake highest-priority waiter (matches CH_CFG_USE_SEMAPHORES_PRIORITY). */
+        int best = 0;
+        for (int i = 1; i < sem->waiter_count; i++) {
+            if (engine->threads[sem->waiters[i]].priority >
+                engine->threads[sem->waiters[best]].priority) {
+                best = i;
+            }
+        }
+
+        int woken = sem->waiters[best];
+        waiter_remove(sem, best);
+        engine->threads[woken].state      = THREAD_READY;
+        engine->threads[woken].blocked_on = -1;
+        engine->threads[woken].pc++;      /* wait succeeded; advance past it */
+
+        smash_trace_log(&engine->trace, engine->step_counter,
                         EVT_SEM_WAKEUP, woken, res_id, 0);
     } else {
         sem->count++;
     }
+}
+
+/*---------------------------------------------------------------------------*/
+/* Condition Variable: models ChibiOS chCond operations                     */
+/*---------------------------------------------------------------------------*/
+
+/* chCondWait: atomically release mutex and wait on condition.
+ * When signaled, re-acquire mutex before returning.
+ * Matches chcond.c semantics. */
+bool smash_cond_wait(smash_engine_t *engine, int tid, int cond_id) {
+
+    smash_resource_t *cnt = &engine->resources[cond_id];
+    smash_thread_t   *t   = &engine->threads[tid];
+
+    if (cnt->type != RES_CONDVAR) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond_wait on non-condvar resource %d", tid, cond_id);
+        return false;
+    }
+
+    int mutex_id = cnt->associated_mutex;
+    if (mutex_id < 0 || mutex_id >= engine->scenario->resource_count) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond %d has invalid associated_mutex %d", tid, cond_id, mutex_id);
+        return false;
+    }
+
+    /* Must own the associated mutex */
+    if (engine->resources[mutex_id].owner != tid) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond_wait without owning associated mutex %d", tid, mutex_id);
+        return false;
+    }
+
+    /* Atomically: unlock mutex + block on condition */
+    /* 1. Pop mutex from owned stack */
+    if (!owned_pop(t, mutex_id)) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond_wait LIFO violation on mutex %d", tid, mutex_id);
+        return false;
+    }
+
+    /* 2. Release mutex ownership */
+    engine->resources[mutex_id].owner = -1;
+
+    /* 3. Block on condition variable */
+    if (cnt->waiter_count >= SMASH_MAX_WAITERS) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "cond %d wait queue overflow", cond_id);
+        return false;
+    }
+    cnt->waiters[cnt->waiter_count++] = tid;
+    t->state      = THREAD_BLOCKED_MUTEX;  /* Reuse BLOCKED_MUTEX state */
+    t->blocked_on = cond_id;
+
+    smash_trace_log(&engine->trace, engine->step_counter,
+                    EVT_SEM_WAIT_BLOCKED, tid, cond_id, 0);
+    return false;  /* Thread blocked */
+}
+
+/* chCondSignal: wake one waiter on condition.
+ * Woken thread will re-acquire associated mutex. */
+void smash_cond_signal(smash_engine_t *engine, int tid, int cond_id) {
+
+    smash_resource_t *cnt = &engine->resources[cond_id];
+    (void)tid;  /* Signaler doesn't block */
+
+    if (cnt->type != RES_CONDVAR) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond_signal on non-condvar resource %d", tid, cond_id);
+        return;
+    }
+
+    if (cnt->waiter_count > 0) {
+        /* Wake highest-priority waiter */
+        int best = 0;
+        for (int i = 1; i < cnt->waiter_count; i++) {
+            if (engine->threads[cnt->waiters[i]].priority >
+                engine->threads[cnt->waiters[best]].priority) {
+                best = i;
+            }
+        }
+
+        int woken = cnt->waiters[best];
+        waiter_remove(cnt, best);
+        engine->threads[woken].state      = THREAD_READY;
+        engine->threads[woken].blocked_on = -1;
+        /* Note: woken thread will re-acquire mutex when it resumes */
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAKEUP, woken, cond_id, 0);
+    }
+    /* If no waiters, signal is lost (ChibiOS behavior) */
+}
+
+/* chCondBroadcast: wake all waiters on condition. */
+void smash_cond_broadcast(smash_engine_t *engine, int tid, int cond_id) {
+
+    smash_resource_t *cnt = &engine->resources[cond_id];
+    (void)tid;
+
+    if (cnt->type != RES_CONDVAR) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: cond_broadcast on non-condvar resource %d", tid, cond_id);
+        return;
+    }
+
+    /* Wake all waiters */
+    while (cnt->waiter_count > 0) {
+        int woken = cnt->waiters[0];
+        waiter_remove(cnt, 0);
+        engine->threads[woken].state      = THREAD_READY;
+        engine->threads[woken].blocked_on = -1;
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAKEUP, woken, cond_id, 0);
+    }
+}
+
+/*---------------------------------------------------------------------------*/
+/* Mailbox: models ChibiOS chMB operations                                  */
+/*---------------------------------------------------------------------------*/
+
+/* chMBPost: post message to mailbox (FIFO).
+ * Blocks if mailbox is full. */
+bool smash_mb_post(smash_engine_t *engine, int tid, int mb_id, int msg) {
+
+    smash_resource_t *mb = &engine->resources[mb_id];
+    smash_thread_t   *t  = &engine->threads[tid];
+
+    if (mb->type != RES_MAILBOX) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: mb_post on non-mailbox resource %d", tid, mb_id);
+        return false;
+    }
+
+    /* Check if mailbox is full */
+    if (mb->mb_count >= mb->mb_capacity) {
+        /* Block sender - store message in waiter queue as negative value */
+        if (mb->waiter_count >= SMASH_MAX_WAITERS) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "mailbox %d wait queue overflow", mb_id);
+            return false;
+        }
+        /* Encode message in waiter entry: use negative values for messages */
+        mb->waiters[mb->waiter_count++] = tid;
+        t->state      = THREAD_BLOCKED_SEM;
+        t->blocked_on = mb_id;
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAIT_BLOCKED, tid, mb_id, msg);
+        return false;  /* Thread blocked */
+    }
+
+    /* Post message (FIFO: add at tail) */
+    mb->mb_messages[mb->mb_tail] = msg;
+    mb->mb_tail = (mb->mb_tail + 1) % mb->mb_capacity;
+    mb->mb_count++;
+
+    smash_trace_log(&engine->trace, engine->step_counter,
+                    EVT_SEM_SIGNAL, tid, mb_id, msg);
+    return true;  /* Success */
+}
+
+/* chMBPostFront: post message to front of mailbox (priority/LIFO). */
+bool smash_mb_post_front(smash_engine_t *engine, int tid, int mb_id, int msg) {
+
+    smash_resource_t *mb = &engine->resources[mb_id];
+    smash_thread_t   *t  = &engine->threads[tid];
+
+    if (mb->type != RES_MAILBOX) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: mb_post_front on non-mailbox resource %d", tid, mb_id);
+        return false;
+    }
+
+    /* Check if mailbox is full */
+    if (mb->mb_count >= mb->mb_capacity) {
+        if (mb->waiter_count >= SMASH_MAX_WAITERS) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "mailbox %d wait queue overflow", mb_id);
+            return false;
+        }
+        mb->waiters[mb->waiter_count++] = tid;
+        t->state      = THREAD_BLOCKED_SEM;
+        t->blocked_on = mb_id;
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAIT_BLOCKED, tid, mb_id, msg);
+        return false;
+    }
+
+    /* Post at front (LIFO: add at head) */
+    mb->mb_head = (mb->mb_head - 1 + mb->mb_capacity) % mb->mb_capacity;
+    mb->mb_messages[mb->mb_head] = msg;
+    mb->mb_count++;
+
+    smash_trace_log(&engine->trace, engine->step_counter,
+                    EVT_SEM_SIGNAL, tid, mb_id, msg);
+    return true;
+}
+
+/* chMBFetch: fetch message from mailbox (FIFO).
+ * Blocks if mailbox is empty. */
+bool smash_mb_fetch(smash_engine_t *engine, int tid, int mb_id, int *out_msg) {
+
+    smash_resource_t *mb = &engine->resources[mb_id];
+    smash_thread_t   *t  = &engine->threads[tid];
+
+    if (mb->type != RES_MAILBOX) {
+        engine->failed = true;
+        snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                 "T%d: mb_fetch on non-mailbox resource %d", tid, mb_id);
+        return false;
+    }
+
+    /* Check if mailbox is empty */
+    if (mb->mb_count == 0) {
+        /* Block receiver */
+        if (mb->waiter_count >= SMASH_MAX_WAITERS) {
+            engine->failed = true;
+            snprintf(engine->fail_msg, sizeof(engine->fail_msg),
+                     "mailbox %d wait queue overflow", mb_id);
+            return false;
+        }
+        mb->waiters[mb->waiter_count++] = tid;
+        t->state      = THREAD_BLOCKED_SEM;
+        t->blocked_on = mb_id;
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAIT_BLOCKED, tid, mb_id, 0);
+        return false;  /* Thread blocked */
+    }
+
+    /* Fetch message (FIFO: remove from head) */
+    *out_msg = mb->mb_messages[mb->mb_head];
+    mb->mb_head = (mb->mb_head + 1) % mb->mb_capacity;
+    mb->mb_count--;
+
+    /* Wake blocked sender if any */
+    if (mb->waiter_count > 0) {
+        int woken = mb->waiters[0];
+        waiter_remove(mb, 0);
+        engine->threads[woken].state      = THREAD_READY;
+        engine->threads[woken].blocked_on = -1;
+        /* Woken sender will post its message */
+
+        smash_trace_log(&engine->trace, engine->step_counter,
+                        EVT_SEM_WAKEUP, woken, mb_id, 0);
+    }
+
+    smash_trace_log(&engine->trace, engine->step_counter,
+                    EVT_SEM_WAKEUP, tid, mb_id, *out_msg);
+    return true;  /* Success */
 }

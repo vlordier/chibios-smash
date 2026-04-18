@@ -100,7 +100,9 @@ typedef struct {
 
 typedef enum {
     RES_MUTEX,
-    RES_SEMAPHORE
+    RES_SEMAPHORE,
+    RES_CONDVAR,      /* Condition variable (chCond) */
+    RES_MAILBOX       /* Mailbox (chMB) */
 } smash_resource_type_t;
 
 typedef struct {
@@ -110,6 +112,14 @@ typedef struct {
     int                   owner;        /* thread id, -1 if free */
     /* Semaphore fields */
     int                   count;
+    /* Condition variable fields */
+    int                   associated_mutex;  /* mutex associated with condvar */
+    /* Mailbox fields */
+    int                   mb_capacity;
+    int                   mb_messages[SMASH_MAX_WAITERS];  /* message IDs */
+    int                   mb_head;      /* next message to fetch */
+    int                   mb_tail;      /* next free slot for post */
+    int                   mb_count;     /* current message count */
     /* Wait queue (shared) */
     int                   waiters[SMASH_MAX_WAITERS];
     int                   waiter_count;
@@ -151,7 +161,20 @@ typedef enum {
      * arg = abstract stack units consumed by the call.
      * Exceeding stack_sizes[tid] from the scenario is a violation. */
     ACT_CALL,           /* simulate a function call; arg = stack units consumed */
-    ACT_RETURN          /* return from a function call; arg = units to release */
+    ACT_RETURN,         /* return from a function call; arg = units to release */
+    /* Condition variables (model chCond operations).
+     * arg = condition variable resource_id */
+    ACT_COND_WAIT,      /* chCondWait(&cnt) - atomic unlock+wait */
+    ACT_COND_SIGNAL,    /* chCondSignal(&cnt) - wake one waiter */
+    ACT_COND_BROADCAST, /* chCondBroadcast(&cnt) - wake all waiters */
+    ACT_COND_WAIT_TIMEOUT, /* chCondWaitTimeout(&cnt, timeout) */
+    /* Mailbox operations (model chMB operations).
+     * arg = mailbox resource_id (resource_id in action = mailbox, arg = message) */
+    ACT_MB_POST,        /* chMBPost(&mb, msg) - FIFO post */
+    ACT_MB_POST_FRONT,  /* chMBPostFront(&mb, msg) - priority msg (LIFO) */
+    ACT_MB_FETCH,       /* chMBFetch(&mb) - FIFO fetch */
+    ACT_MB_POST_TIMEOUT,   /* chMBPostTimeout(&mb, msg, timeout) */
+    ACT_MB_FETCH_TIMEOUT   /* chMBFetchTimeout(&mb, timeout) */
 } smash_action_type_t;
 
 typedef struct {
@@ -181,8 +204,10 @@ typedef struct {
     smash_action_t steps[SMASH_MAX_THREADS][SMASH_MAX_STEPS];
     int           step_count[SMASH_MAX_THREADS];
     smash_resource_type_t res_types[SMASH_MAX_RESOURCES];
-    int           sem_init[SMASH_MAX_RESOURCES];    /* initial sem count */
-    int           stack_sizes[SMASH_MAX_THREADS];   /* max stack depth per thread; 0 = unlimited */
+    int           sem_init[SMASH_MAX_RESOURCES];        /* initial sem count */
+    int           associated_mutex[SMASH_MAX_RESOURCES];/* for condition variables */
+    int           mb_capacity[SMASH_MAX_RESOURCES];     /* for mailboxes */
+    int           stack_sizes[SMASH_MAX_THREADS];       /* max stack depth per thread; 0 = unlimited */
 } smash_scenario_t;
 
 /*===========================================================================*/
@@ -334,6 +359,14 @@ bool smash_mutex_lock(smash_engine_t *engine, int tid, int res_id);
 void smash_mutex_unlock(smash_engine_t *engine, int tid, int res_id);
 bool smash_sem_wait(smash_engine_t *engine, int tid, int res_id);
 void smash_sem_signal(smash_engine_t *engine, int tid, int res_id);
+/* Condition variable operations (chCond model). */
+bool smash_cond_wait(smash_engine_t *engine, int tid, int cond_id);
+void smash_cond_signal(smash_engine_t *engine, int tid, int cond_id);
+void smash_cond_broadcast(smash_engine_t *engine, int tid, int cond_id);
+/* Mailbox operations (chMB model). */
+bool smash_mb_post(smash_engine_t *engine, int tid, int mb_id, int msg);
+bool smash_mb_post_front(smash_engine_t *engine, int tid, int mb_id, int msg);
+bool smash_mb_fetch(smash_engine_t *engine, int tid, int mb_id, int *out_msg);
 
 /*===========================================================================*/
 /* DPOR API (dpor.c)                                                        */

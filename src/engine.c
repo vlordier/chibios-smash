@@ -51,12 +51,17 @@ void smash_engine_reset(smash_engine_t *engine) {
 
     /* Init resources. */
     for (int i = 0; i < sc->resource_count; i++) {
-        engine->resources[i].type         = sc->res_types[i];
-        engine->resources[i].id           = i;
-        engine->resources[i].owner        = -1;
-        engine->resources[i].count        = sc->sem_init[i];
-        engine->resources[i].waiter_count = 0;
-        engine->resources[i].alive        = true;
+        engine->resources[i].type              = sc->res_types[i];
+        engine->resources[i].id                = i;
+        engine->resources[i].owner             = -1;
+        engine->resources[i].count             = sc->sem_init[i];
+        engine->resources[i].associated_mutex  = sc->associated_mutex[i];
+        engine->resources[i].mb_capacity       = sc->mb_capacity[i];
+        engine->resources[i].mb_head           = 0;
+        engine->resources[i].mb_tail           = 0;
+        engine->resources[i].mb_count          = 0;
+        engine->resources[i].waiter_count      = 0;
+        engine->resources[i].alive             = true;
     }
 
     smash_trace_init(&engine->trace);
@@ -193,6 +198,48 @@ bool smash_execute_step(smash_engine_t *engine, int tid) {
         smash_sem_signal(engine, tid, act.resource_id);
         t->pc++;
         break;
+
+    /* Condition variable operations */
+    case ACT_COND_WAIT:
+        if (smash_cond_wait(engine, tid, act.resource_id)) {
+            t->pc++;
+        }
+        break;
+
+    case ACT_COND_SIGNAL:
+        smash_cond_signal(engine, tid, act.resource_id);
+        t->pc++;
+        break;
+
+    case ACT_COND_BROADCAST:
+        smash_cond_broadcast(engine, tid, act.resource_id);
+        t->pc++;
+        break;
+
+    /* Mailbox operations */
+    case ACT_MB_POST: {
+        int msg = act.arg;  /* Message ID from act.arg */
+        if (smash_mb_post(engine, tid, act.resource_id, msg)) {
+            t->pc++;
+        }
+        break;
+    }
+
+    case ACT_MB_POST_FRONT: {
+        int msg = act.arg;
+        if (smash_mb_post_front(engine, tid, act.resource_id, msg)) {
+            t->pc++;
+        }
+        break;
+    }
+
+    case ACT_MB_FETCH: {
+        int msg;
+        if (smash_mb_fetch(engine, tid, act.resource_id, &msg)) {
+            t->pc++;
+        }
+        break;
+    }
 
     case ACT_YIELD:
         smash_trace_log(&engine->trace, engine->step_counter,
