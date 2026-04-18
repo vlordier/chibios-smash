@@ -29,19 +29,19 @@ static smash_scenario_t priority_inversion(void) {
 
     /* T0 (low): lock(M0) -> yield -> yield -> unlock(M0) */
     sc.steps[0][0] = (smash_action_t){ACT_MUTEX_LOCK,   0};
-    sc.steps[0][1] = (smash_action_t){ACT_YIELD,       -1};
-    sc.steps[0][2] = (smash_action_t){ACT_YIELD,       -1};
+    sc.steps[0][1] = (smash_action_t){ACT_YIELD,       SMASH_NO_RESOURCE};
+    sc.steps[0][2] = (smash_action_t){ACT_YIELD,       SMASH_NO_RESOURCE};
     sc.steps[0][3] = (smash_action_t){ACT_MUTEX_UNLOCK, 0};
     sc.step_count[0] = 4;
 
     /* T1 (med): yield -> yield -> yield */
-    sc.steps[1][0] = (smash_action_t){ACT_YIELD, -1};
-    sc.steps[1][1] = (smash_action_t){ACT_YIELD, -1};
-    sc.steps[1][2] = (smash_action_t){ACT_YIELD, -1};
+    sc.steps[1][0] = (smash_action_t){ACT_YIELD, SMASH_NO_RESOURCE};
+    sc.steps[1][1] = (smash_action_t){ACT_YIELD, SMASH_NO_RESOURCE};
+    sc.steps[1][2] = (smash_action_t){ACT_YIELD, SMASH_NO_RESOURCE};
     sc.step_count[1] = 3;
 
     /* T2 (high): yield -> lock(M0) -> unlock(M0) */
-    sc.steps[2][0] = (smash_action_t){ACT_YIELD,       -1};
+    sc.steps[2][0] = (smash_action_t){ACT_YIELD,       SMASH_NO_RESOURCE};
     sc.steps[2][1] = (smash_action_t){ACT_MUTEX_LOCK,   0};
     sc.steps[2][2] = (smash_action_t){ACT_MUTEX_UNLOCK, 0};
     sc.step_count[2] = 3;

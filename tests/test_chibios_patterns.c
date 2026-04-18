@@ -216,7 +216,7 @@ static smash_scenario_t sc_exit_with_mutex(void) {
 
     /* T0: lock(M) → exit WITHOUT unlocking */
     sc.steps[0][0] = (smash_action_t){ACT_MUTEX_LOCK, 0};
-    sc.steps[0][1] = (smash_action_t){ACT_DONE,      -1};
+    sc.steps[0][1] = (smash_action_t){ACT_DONE,      SMASH_NO_RESOURCE};
     sc.step_count[0] = 2;
 
     /* T1: lock(M) → unlock(M) — will deadlock if T0 exits holding M */
