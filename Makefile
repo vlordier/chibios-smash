@@ -35,11 +35,13 @@ $(BUILDDIR)/test_%: $(TESTDIR)/test_%.c $(OBJS) | $(BUILDDIR)
 
 test: $(TEST_BINS)
 	@echo "=== Running all tests ==="
-	@for t in $(TEST_BINS); do \
+	@failed=0; for t in $(TEST_BINS); do \
 		echo ""; \
 		echo "--- $$t ---"; \
-		$$t || true; \
-	done
+		$$t || { echo "FAILED: $$t"; failed=1; }; \
+	done; \
+	if [ $$failed -ne 0 ]; then echo ""; echo "=== SOME TESTS FAILED ==="; exit 1; fi; \
+	echo ""; echo "=== All tests passed ==="
 
 clean:
 	rm -rf $(BUILDDIR)
