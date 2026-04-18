@@ -246,71 +246,67 @@ bool smash_check_circular_wait(const smash_engine_t *engine,
         }
     }
 
-    /* Detect cycles using DFS. A cycle exists if we can reach a node
-     * from itself. */
-    bool visited[SMASH_MAX_THREADS] = {false};
-    bool in_stack[SMASH_MAX_THREADS] = {false};
+    /* Detect cycles using iterative DFS over the wait-for graph.
+     * For each unvisited mutex-blocked thread, do a DFS and flag any
+     * back-edge (node already in the current call stack). */
+    bool visited[SMASH_MAX_THREADS]   = {false};
+    bool in_stack[SMASH_MAX_THREADS]  = {false};
     int  cycle_path[SMASH_MAX_THREADS];
-    int  path_len = 0;
+    int  dfs_stack[SMASH_MAX_THREADS];
+    int  dfs_ptr[SMASH_MAX_THREADS];   /* next neighbour index to examine */
+    int  top;
 
-    /* Helper lambda-style macro for cycle detection DFS. */
-    #define DFS_CYCLE_CHECK(start_tid) do {                           \
-        int stack[SMASH_MAX_THREADS];                                 \
-        int stack_ptr[SMASH_MAX_THREADS];                             \
-        int top = 0;                                                  \
-        stack[0] = (start_tid);                                       \
-        stack_ptr[0] = 0;                                             \
-        path_len = 1;                                                 \
-        cycle_path[0] = (start_tid);                                  \
-                                                                      \
-        while (top >= 0) {                                            \
-            int cur = stack[top];                                     \
-            int idx = stack_ptr[top];                                 \
-            bool found_next = false;                                  \
-                                                                      \
-            for (int next = idx; next < engine->scenario->thread_count; next++) { \
-                if (waits_for[cur][next]) {                           \
-                    if (in_stack[next]) {                             \
-                        /* Cycle found! Build diagnostic message. */  \
-                        int off = snprintf(msg, (size_t)msg_len,      \
-                                 "CIRCULAR WAIT (deadlock): ");       \
-                        for (int p = 0; p <= top && off < msg_len; p++) { \
-                            off += snprintf(msg + off, (size_t)(msg_len - off), \
-                                           "T%d -> ", cycle_path[p]); \
-                        }                                             \
-                        snprintf(msg + off, (size_t)(msg_len - off),  \
-                                 "T%d (blocks on T%d)", next, cycle_path[0]); \
-                        return false;                                 \
-                    }                                                 \
-                    if (!visited[next]) {                             \
-                        visited[next] = true;                         \
-                        in_stack[next] = true;                        \
-                        top++;                                        \
-                        stack[top] = next;                            \
-                        stack_ptr[top] = 0;                           \
-                        cycle_path[++path_len-1] = next;              \
-                        found_next = true;                            \
-                        break;                                        \
-                    }                                                 \
-                }                                                     \
-            }                                                         \
-            if (!found_next) {                                        \
-                in_stack[stack[top]] = false;                         \
-                top--;                                                \
-                if (path_len > 0) path_len--;                         \
-            }                                                         \
-        }                                                             \
-    } while(0)
+    for (int start = 0; start < engine->scenario->thread_count; start++) {
+        if (visited[start] || engine->threads[start].state != THREAD_BLOCKED_MUTEX)
+            continue;
 
-    for (int t = 0; t < engine->scenario->thread_count; t++) {
-        if (!visited[t] && engine->threads[t].state == THREAD_BLOCKED_MUTEX) {
-            visited[t] = true;
-            in_stack[t] = true;
-            DFS_CYCLE_CHECK(t);
+        /* Push start node. */
+        visited[start]    = true;
+        in_stack[start]   = true;
+        dfs_stack[0]      = start;
+        dfs_ptr[0]        = 0;
+        cycle_path[0]     = start;
+        top               = 0;
+
+        while (top >= 0) {
+            int cur        = dfs_stack[top];
+            bool found     = false;
+
+            for (int next = dfs_ptr[top]; next < engine->scenario->thread_count; next++) {
+                if (!waits_for[cur][next]) continue;
+                dfs_ptr[top] = next + 1;   /* resume from next+1 on backtrack */
+
+                if (in_stack[next]) {
+                    /* Back-edge: cycle found.  Build diagnostic message. */
+                    int off = snprintf(msg, (size_t)msg_len,
+                                       "CIRCULAR WAIT (deadlock): ");
+                    for (int p = 0; p <= top && off < msg_len; p++) {
+                        off += snprintf(msg + off, (size_t)(msg_len - off),
+                                        "T%d -> ", cycle_path[p]);
+                    }
+                    snprintf(msg + off, (size_t)(msg_len - off),
+                             "T%d (blocks on T%d)", next, cycle_path[0]);
+                    return false;
+                }
+
+                if (!visited[next]) {
+                    visited[next]       = true;
+                    in_stack[next]      = true;
+                    top++;
+                    dfs_stack[top]      = next;
+                    dfs_ptr[top]        = 0;
+                    cycle_path[top]     = next;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                in_stack[dfs_stack[top]] = false;
+                top--;
+            }
         }
     }
-
-    #undef DFS_CYCLE_CHECK
 
     return true;
 }
