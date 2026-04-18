@@ -49,12 +49,10 @@ _Static_assert(SMASH_MAX_DEPTH <= SMASH_MAX_TRACE,
 /*===========================================================================*/
 
 typedef enum {
-    THREAD_READY,
-    THREAD_RUNNING,
-    THREAD_BLOCKED_MUTEX,
-    THREAD_BLOCKED_SEM,
-    THREAD_SLEEPING,
-    THREAD_DONE
+    THREAD_READY,           /* runnable, waiting to be scheduled */
+    THREAD_BLOCKED_MUTEX,   /* waiting for a mutex (chMtxLock) */
+    THREAD_BLOCKED_SEM,     /* waiting for a semaphore (chSemWait) */
+    THREAD_DONE             /* all steps completed */
 } smash_thread_state_t;
 
 typedef struct {
