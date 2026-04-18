@@ -352,6 +352,7 @@ typedef struct {
     uint64_t violations;
     double   elapsed_secs;
     smash_trace_t *failing_trace;  /* first failure, or NULL */
+    uint64_t max_depth_reached;     /* deepest DFS depth actually explored */
 } smash_result_t;
 
 smash_result_t smash_explore(const smash_scenario_t *scenario,

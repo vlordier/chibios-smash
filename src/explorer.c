@@ -268,6 +268,7 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     explore_dfs(&engine, config, &result, 0);
+    result.max_depth_reached = engine.max_depth_reached;
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     result.elapsed_secs = (double)(t1.tv_sec - t0.tv_sec) +
@@ -296,6 +297,7 @@ void smash_result_print(const smash_result_t *result, FILE *out) {
     fprintf(out, "  Pruned by DPOR         : %llu\n", result->dpor_pruned);
     fprintf(out, "  Deadlocks found        : %llu\n", result->deadlocks);
     fprintf(out, "  Invariant violations   : %llu\n", result->violations);
+    fprintf(out, "  Max depth reached      : %llu\n", result->max_depth_reached);
     fprintf(out, "  Elapsed                : %.3f s\n", result->elapsed_secs);
     fprintf(out, "========================================\n");
 
