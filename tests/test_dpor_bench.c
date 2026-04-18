@@ -71,8 +71,8 @@ static smash_scenario_t two_independent_pairs(void) {
     return sc;
 }
 
-static void run(const char *label, const smash_scenario_t *sc,
-                bool dpor, bool cache) {
+static smash_result_t run(const char *label, const smash_scenario_t *sc,
+                          bool dpor, bool cache) {
 
     smash_config_t cfg = {
         .enable_dpor          = dpor,
@@ -86,19 +86,20 @@ static void run(const char *label, const smash_scenario_t *sc,
     smash_result_t r = smash_explore(sc, &cfg);
 
     printf("  %-38s  iters=%6llu  states=%6llu"
-           "  cache=%5llu  dpor=%5llu  t=%.4fs\n",
+           "  cache=%5llu  dpor=%5llu  sleep=%5llu  t=%.4fs\n",
            label,
            r.interleavings,
            r.states,
            r.cache_pruned,
            r.dpor_pruned,
+           r.sleep_pruned,
            r.elapsed_secs);
 
     if (r.failing_trace) {
         printf("    *** BUG FOUND (unexpected) ***\n");
         smash_trace_dump(r.failing_trace, stdout);
-        free(r.failing_trace);
     }
+    return r;
 }
 
 int main(void) {
@@ -109,15 +110,45 @@ int main(void) {
 
     printf("  %-38s  %s\n", "Mode", "Results");
     printf("  %s\n", "----------------------------------------------------------------------");
-    run("Plain DFS (no cache, no DPOR)",   &sc, false, false);
-    run("State caching only",              &sc, false, true);
-    run("DPOR only (persistent sets)",     &sc, true,  false);
-    run("DPOR + state caching",            &sc, true,  true);
+    smash_result_t r_plain = run("Plain DFS (no cache, no DPOR)",   &sc, false, false);
+    smash_result_t r_cache = run("State caching only",              &sc, false, true);
+    smash_result_t r_dpor  = run("DPOR only (persistent sets)",     &sc, true,  false);
+    smash_result_t r_both  = run("DPOR + state caching",            &sc, true,  true);
 
     printf("\n");
     printf("Expected: DPOR reduces interleavings because S0-operations\n");
     printf("are independent of S1-operations (different resources).\n");
     printf("Plain DFS must enumerate all orderings; DPOR prunes symmetric ones.\n");
 
-    return 0;
+    int failed = 0;
+
+    /* DPOR must prune at least some interleavings vs plain DFS. */
+    if (r_dpor.interleavings >= r_plain.interleavings) {
+        fprintf(stderr, "FAIL: DPOR did not reduce interleavings (%llu >= %llu)\n",
+                r_dpor.interleavings, r_plain.interleavings);
+        failed++;
+    }
+    /* State caching must prune at least some states vs plain DFS. */
+    if (r_cache.states >= r_plain.states) {
+        fprintf(stderr, "FAIL: state caching did not reduce states (%llu >= %llu)\n",
+                r_cache.states, r_plain.states);
+        failed++;
+    }
+    /* Combined must be no worse than either alone. */
+    if (r_both.states > r_dpor.states && r_both.states > r_cache.states) {
+        fprintf(stderr, "FAIL: combined mode is worse than either individual mode\n");
+        failed++;
+    }
+    /* No bugs in any mode (scenario is deadlock-free). */
+    if (r_plain.deadlocks || r_cache.deadlocks || r_dpor.deadlocks || r_both.deadlocks) {
+        fprintf(stderr, "FAIL: unexpected deadlock in benchmark scenario\n");
+        failed++;
+    }
+
+    smash_result_free(&r_plain);
+    smash_result_free(&r_cache);
+    smash_result_free(&r_dpor);
+    smash_result_free(&r_both);
+
+    return failed ? 1 : 0;
 }
