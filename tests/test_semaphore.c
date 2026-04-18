@@ -69,7 +69,7 @@ static smash_scenario_t balanced_semaphore(void) {
 int main(void) {
 
     smash_config_t config = {
-        .enable_dpor          = false,
+        .enable_dpor          = true,
         .enable_state_caching = true,
         .max_depth            = 64,
         .max_interleavings    = 100000,
@@ -77,17 +77,37 @@ int main(void) {
         .verbose              = true
     };
 
+    int failed = 0;
+
     printf("=== Test: Unbalanced producer-consumer ===\n");
     smash_scenario_t sc1 = producer_consumer();
     smash_result_t r1 = smash_explore(&sc1, &config);
     smash_result_print(&r1, stdout);
-    free(r1.failing_trace);
+    /* 3 waits, 2 signals: some interleavings end with one consumer
+     * permanently blocked.  Expect at least one deadlock; no violations. */
+    if (r1.deadlocks == 0) {
+        fprintf(stderr, "FAIL: expected deadlocks > 0, got %llu\n", r1.deadlocks);
+        failed++;
+    }
+    if (r1.violations != 0) {
+        fprintf(stderr, "FAIL: expected violations == 0, got %llu\n", r1.violations);
+        failed++;
+    }
+    smash_result_free(&r1);
 
     printf("\n=== Test: Balanced producer-consumer ===\n");
     smash_scenario_t sc2 = balanced_semaphore();
     smash_result_t r2 = smash_explore(&sc2, &config);
     smash_result_print(&r2, stdout);
-    free(r2.failing_trace);
+    if (r2.deadlocks != 0) {
+        fprintf(stderr, "FAIL: expected deadlocks == 0, got %llu\n", r2.deadlocks);
+        failed++;
+    }
+    if (r2.violations != 0) {
+        fprintf(stderr, "FAIL: expected violations == 0, got %llu\n", r2.violations);
+        failed++;
+    }
+    smash_result_free(&r2);
 
-    return 0;
+    return failed ? 1 : 0;
 }
