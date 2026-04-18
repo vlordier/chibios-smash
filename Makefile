@@ -45,5 +45,9 @@ test: $(TEST_BINS)
 	if [ $$failed -ne 0 ]; then echo ""; echo "=== SOME TESTS FAILED ==="; exit 1; fi; \
 	echo ""; echo "=== All tests passed ==="
 
+asan: CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer -O1
+asan: LDFLAGS += -fsanitize=address,undefined
+asan: clean $(TEST_BINS)
+
 clean:
 	rm -rf $(BUILDDIR)
