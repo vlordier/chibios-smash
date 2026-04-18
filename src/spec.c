@@ -79,6 +79,30 @@ bool smash_check_mutex_integrity(const smash_engine_t *engine,
                      "MUTEX %d: free but has %d waiters", i, r->waiter_count);
             return false;
         }
+
+        /* waiter_count must not exceed the queue capacity. */
+        if (r->waiter_count < 0 || r->waiter_count > SMASH_MAX_WAITERS) {
+            snprintf(msg, (size_t)msg_len,
+                     "MUTEX %d: waiter_count %d out of range [0,%d]",
+                     i, r->waiter_count, SMASH_MAX_WAITERS);
+            return false;
+        }
+
+        /* Every waiter must be a valid thread ID in a blocked state. */
+        for (int w = 0; w < r->waiter_count; w++) {
+            int wid = r->waiters[w];
+            if (wid < 0 || wid >= engine->scenario->thread_count) {
+                snprintf(msg, (size_t)msg_len,
+                         "MUTEX %d: waiters[%d]=%d invalid thread id", i, w, wid);
+                return false;
+            }
+            if (engine->threads[wid].state != THREAD_BLOCKED_MUTEX) {
+                snprintf(msg, (size_t)msg_len,
+                         "MUTEX %d: waiter T%d is not in BLOCKED_MUTEX state",
+                         i, wid);
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -97,12 +121,35 @@ bool smash_check_sem_integrity(const smash_engine_t *engine,
             return false;
         }
 
+        /* waiter_count must not exceed the queue capacity. */
+        if (r->waiter_count < 0 || r->waiter_count > SMASH_MAX_WAITERS) {
+            snprintf(msg, (size_t)msg_len,
+                     "SEM %d: waiter_count %d out of range [0,%d]",
+                     i, r->waiter_count, SMASH_MAX_WAITERS);
+            return false;
+        }
+
         /* If count > 0, no waiters should exist (lost wakeup). */
         if (r->count > 0 && r->waiter_count > 0) {
             snprintf(msg, (size_t)msg_len,
                      "SEM %d: count=%d but %d waiters (lost wakeup)",
                      i, r->count, r->waiter_count);
             return false;
+        }
+
+        /* Every waiter must be a valid thread ID in a blocked state. */
+        for (int w = 0; w < r->waiter_count; w++) {
+            int wid = r->waiters[w];
+            if (wid < 0 || wid >= engine->scenario->thread_count) {
+                snprintf(msg, (size_t)msg_len,
+                         "SEM %d: waiters[%d]=%d invalid thread id", i, w, wid);
+                return false;
+            }
+            if (engine->threads[wid].state != THREAD_BLOCKED_SEM) {
+                snprintf(msg, (size_t)msg_len,
+                         "SEM %d: waiter T%d is not in BLOCKED_SEM state", i, wid);
+                return false;
+            }
         }
     }
     return true;
