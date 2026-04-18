@@ -321,6 +321,9 @@ bool smash_check_priority_inversion(const smash_engine_t *engine,
 /* Verify owned_mutex_stack vs actual mutex ownership for every thread. */
 bool smash_check_owned_mutex_integrity(const smash_engine_t *engine,
                                        char *msg, int msg_len);
+/* Detect circular wait (wait-for graph cycle) - the fundamental deadlock mechanism. */
+bool smash_check_circular_wait(const smash_engine_t *engine,
+                               char *msg, int msg_len);
 bool smash_check_all(const smash_engine_t *engine, char *msg, int msg_len);
 
 /*===========================================================================*/
@@ -354,6 +357,16 @@ typedef struct {
     smash_trace_t *failing_trace;  /* first failure, or NULL */
     uint64_t max_depth_reached;     /* deepest DFS depth actually explored */
 } smash_result_t;
+
+/* Default config: DPOR + state caching enabled, liberal limits, first-bug stop. */
+#define SMASH_CONFIG_DEFAULT ((smash_config_t){ \
+    .enable_dpor          = true,                \
+    .enable_state_caching = true,                \
+    .max_depth            = SMASH_MAX_DEPTH,     \
+    .max_interleavings    = UINT64_MAX,           \
+    .stop_on_first_bug    = true,                \
+    .verbose              = false,               \
+})
 
 smash_result_t smash_explore(const smash_scenario_t *scenario,
                              const smash_config_t *config);
