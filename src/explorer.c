@@ -75,10 +75,14 @@ static smash_action_t thread_next_action(const smash_engine_t *engine, int tid) 
 static uint32_t compute_persistent_set(const smash_engine_t *engine,
                                        const int *runnable, int n) {
 
+    /* Build bitmask of all runnable threads; early-exit when reached. */
+    uint32_t full_set = 0;
+    for (int i = 0; i < n; i++) full_set |= (uint32_t)(1U << runnable[i]);
+
     uint32_t set = (uint32_t)(1U << runnable[0]);
     bool changed = true;
 
-    while (changed) {
+    while (changed && set != full_set) {
         changed = false;
         for (int i = 0; i < n; i++) {
             int q = runnable[i];
