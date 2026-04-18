@@ -101,9 +101,6 @@ int smash_trace_minimize(smash_trace_t *trace, smash_engine_t *engine,
     if (trace->schedule_len == 0) return 0;
 
     int original_len = trace->schedule_len;
-    int schedule_copy[SMASH_MAX_DEPTH];
-    memcpy(schedule_copy, trace->schedule,
-           (size_t)original_len * sizeof(int));
 
     /* Delta debugging: try removing chunks of decreasing size. */
     for (int chunk = original_len / 2; chunk >= 1; chunk /= 2) {
