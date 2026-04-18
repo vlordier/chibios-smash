@@ -20,7 +20,9 @@ OBJS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))
 TESTS = test_mutex_deadlock test_semaphore test_priority_inversion test_chibios_patterns test_dpor_bench
 TEST_BINS = $(patsubst %, $(BUILDDIR)/%, $(TESTS))
 
-.PHONY: all clean test
+.PHONY: all clean test asan
+# Prevent make from deleting .o files as intermediates after linking.
+.SECONDARY: $(OBJS)
 
 all: $(TEST_BINS)
 
