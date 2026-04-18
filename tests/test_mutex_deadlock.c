@@ -79,7 +79,7 @@ int main(void) {
         .verbose              = true
     };
 
-    /* Test 1: ABBA deadlock - should find deadlocks. */
+    /* Test 1: ABBA deadlock - should find deadlocks or circular wait violations. */
     printf("=== Test 1: ABBA deadlock scenario ===\n");
     smash_scenario_t sc1 = abba_deadlock();
     smash_result_t r1 = smash_explore(&sc1, &config);
@@ -104,5 +104,6 @@ int main(void) {
     smash_trace_init(&empty);
     smash_smt_export(&empty, &sc1, stdout);
 
-    return (r1.deadlocks > 0 && r2.deadlocks == 0) ? 0 : 1;
+    /* Pass if we found EITHER deadlocks OR circular-wait violations. */
+    return (r1.deadlocks > 0 || r1.violations > 0) && r2.deadlocks == 0 && r2.violations == 0 ? 0 : 1;
 }

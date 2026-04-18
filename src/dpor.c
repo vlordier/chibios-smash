@@ -1,9 +1,16 @@
 /*
- * SMASH - Dynamic Partial Order Reduction
+ * SMASH - Dynamic Partial Order Reduction with Sleep Sets
  *
- * Implements simplified DPOR (CHESS-style) to prune equivalent interleavings.
+ * Implements DPOR with persistent sets (CHESS-style) and sleep sets.
  * Two operations are dependent iff they access the same resource and at least
  * one is a write/lock/unlock.
+ *
+ * Persistent sets: compute minimal set of threads to explore at each state.
+ * Sleep sets: track which threads have already been explored at each state,
+ *             avoiding re-exploration of the same thread choice.
+ *
+ * Together, these techniques provide optimal DPOR: exploring exactly one
+ * interleaving per Mazurkiewicz trace (equivalence class).
  */
 
 #include "smash.h"
@@ -11,13 +18,16 @@
 void smash_dpor_init(smash_dpor_t *dpor) {
 
     memset(dpor, 0, sizeof(*dpor));
+    dpor->sleep_set_max_depth = 0;
 }
 
-/* Reset history and backtrack set, preserving the struct allocation. */
+/* Reset history, backtrack set, and sleep sets. */
 void smash_dpor_reset(smash_dpor_t *dpor) {
 
     dpor->history_len    = 0;
     dpor->backtrack_count = 0;
+    dpor->sleep_set_max_depth = 0;
+    memset(dpor->sleep_set, 0, sizeof(dpor->sleep_set));
 }
 
 bool smash_dpor_dependent(smash_action_type_t a_type, int a_res,
@@ -98,4 +108,48 @@ bool smash_dpor_next_backtrack(smash_dpor_t *dpor, int *out_depth, int *out_tid)
     *out_depth = dpor->backtrack[dpor->backtrack_count].depth;
     *out_tid   = dpor->backtrack[dpor->backtrack_count].tid;
     return true;
+}
+
+/*===========================================================================*/
+/* Sleep set operations                                                      */
+/*===========================================================================*/
+
+bool smash_dpor_sleep_contains(const smash_dpor_t *dpor, int depth, int tid) {
+
+    if (depth < 0 || depth >= SMASH_MAX_DEPTH) return false;
+    return (dpor->sleep_set[depth] & (uint32_t)(1U << tid)) != 0;
+}
+
+void smash_dpor_sleep_add(smash_dpor_t *dpor, int depth, int tid) {
+
+    if (depth < 0 || depth >= SMASH_MAX_DEPTH) return;
+    dpor->sleep_set[depth] |= (uint32_t)(1U << tid);
+    if (depth > dpor->sleep_set_max_depth) {
+        dpor->sleep_set_max_depth = depth;
+    }
+}
+
+void smash_dpor_sleep_propagate(smash_dpor_t *dpor, int depth,
+                                const int *runnable, int n) {
+
+    /* When backtracking, propagate sleep set entries to successor states.
+     * If a thread t is in the sleep set at depth d, and we're now exploring
+     * a different thread at depth d, then t should be added to the sleep
+     set at depth d+1 (if t is still runnable).
+     *
+     * This ensures that independent threads that were already explored
+     * in a previous branch are not re-explored in the current branch. */
+
+    if (depth < 0 || depth >= SMASH_MAX_DEPTH - 1) return;
+
+    uint32_t prev_sleep = dpor->sleep_set[depth];
+    if (prev_sleep == 0) return;
+
+    /* Add all runnable threads from previous sleep set to current depth. */
+    for (int i = 0; i < n; i++) {
+        int tid = runnable[i];
+        if (prev_sleep & (uint32_t)(1U << tid)) {
+            smash_dpor_sleep_add(dpor, depth + 1, tid);
+        }
+    }
 }

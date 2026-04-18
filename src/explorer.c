@@ -280,6 +280,11 @@ static void explore_dfs(smash_engine_t *engine,
         /* Recurse. */
         explore_dfs(engine, config, result, depth + 1);
 
+        /* Propagate sleep set to next depth (for backtracking). */
+        if (config->enable_dpor) {
+            smash_dpor_sleep_propagate(&g_dpor, depth, runnable, n);
+        }
+
         restore_engine(engine, depth);
 
         if (result->failing_trace && config->stop_on_first_bug) return;
@@ -312,6 +317,16 @@ smash_result_t smash_explore(const smash_scenario_t *scenario,
         cfg.max_depth = SMASH_MAX_DEPTH;
     if (cfg.max_interleavings == 0)
         cfg.max_interleavings = UINT64_MAX;
+
+    /* Initialize DPOR context (persistent sets + sleep sets). */
+    if (cfg.enable_dpor) {
+        if (!g_dpor_initialized) {
+            smash_dpor_init(&g_dpor);
+            g_dpor_initialized = true;
+        } else {
+            smash_dpor_reset(&g_dpor);
+        }
+    }
 
     smash_engine_t engine;
     smash_engine_init(&engine, scenario);
@@ -350,6 +365,7 @@ void smash_result_print(const smash_result_t *result, FILE *out) {
     fprintf(out, "  States visited         : %llu\n", result->states);
     fprintf(out, "  Pruned by cache        : %llu\n", result->cache_pruned);
     fprintf(out, "  Pruned by DPOR         : %llu\n", result->dpor_pruned);
+    fprintf(out, "  Pruned by sleep sets   : %llu\n", result->sleep_pruned);
     fprintf(out, "  Deadlocks found        : %llu\n", result->deadlocks);
     fprintf(out, "  Invariant violations   : %llu\n", result->violations);
     fprintf(out, "  Max depth reached      : %llu\n", result->max_depth_reached);
